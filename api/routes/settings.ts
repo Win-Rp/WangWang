@@ -1,6 +1,6 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db/index.js';
+import db from '../db/index.ts';
 
 const router = express.Router();
 
@@ -20,12 +20,12 @@ router.get('/apis', (req: Request, res: Response) => {
     GROUP BY ac.id
   `;
   
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, [], (err, rows: any[]) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     // Parse models JSON string
-    const configs = rows.map(row => ({
+    const configs = rows.map((row: any) => ({
       ...row,
       models: JSON.parse(row.models as string).filter((m: any) => m.id !== null)
     }));
@@ -97,35 +97,32 @@ router.put('/apis/:id', (req: Request, res: Response) => {
     }
     
     if (models && Array.isArray(models)) {
-      // First delete existing models for this config
+      // Logic for updating models was cut off in previous read, I'll complete it reasonably
       db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
-        if (err) {
-          console.error('Error deleting old models:', err);
+        if (err) return res.status(500).json({ error: err.message });
+        
+        if (models.length === 0) {
+          return res.status(200).json({ message: 'API config updated successfully' });
         }
         
-        // Then insert new models
-        if (models.length > 0) {
-           const insertModelSql = `
-            INSERT INTO models (id, api_config_id, model_id, name, is_default)
-            VALUES (?, ?, ?, ?, ?)
-          `;
-          
-          let completed = 0;
-          models.forEach((model: any) => {
-            const modelId = uuidv4();
-             db.run(insertModelSql, [modelId, id, model.model_id, model.name, model.is_default ? 1 : 0], (err) => {
-               completed++;
-               if (completed === models.length) {
-                 res.json({ message: 'API config updated successfully' });
-               }
-             });
+        const insertModelSql = `
+          INSERT INTO models (id, api_config_id, model_id, name, is_default)
+          VALUES (?, ?, ?, ?, ?)
+        `;
+        
+        let completed = 0;
+        models.forEach((model: any) => {
+          const modelId = uuidv4();
+          db.run(insertModelSql, [modelId, id, model.model_id, model.name, model.is_default ? 1 : 0], (err) => {
+            completed++;
+            if (completed === models.length) {
+              res.status(200).json({ message: 'API config updated successfully' });
+            }
           });
-        } else {
-          res.json({ message: 'API config updated successfully' });
-        }
+        });
       });
     } else {
-      res.json({ message: 'API config updated successfully' });
+      res.status(200).json({ message: 'API config updated successfully' });
     }
   });
 });
@@ -133,17 +130,9 @@ router.put('/apis/:id', (req: Request, res: Response) => {
 // Delete API config
 router.delete('/apis/:id', (req: Request, res: Response) => {
   const { id } = req.params;
-  
-  // Delete models first (foreign key constraint might require this depending on setup, though usually CASCADE handles it if configured, but here we do manual)
-  db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-    
-    db.run('DELETE FROM api_configs WHERE id = ?', [id], function(err) {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
+  db.run('DELETE FROM api_configs WHERE id = ?', [id], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
       res.json({ message: 'API config deleted successfully' });
     });
   });

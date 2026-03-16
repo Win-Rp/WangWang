@@ -11,10 +11,10 @@ import cors from 'cors'
 import path from 'path'
 import dotenv from 'dotenv'
 import { fileURLToPath } from 'url'
-import authRoutes from './routes/auth.js'
-import projectRoutes from './routes/projects.js'
-import settingsRoutes from './routes/settings.js'
-import aiRoutes from './routes/ai.js'
+import authRoutes from './routes/auth.ts'
+import projectRoutes from './routes/projects.ts'
+import settingsRoutes from './routes/settings.ts'
+import aiRoutes from './routes/ai.ts'
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url)

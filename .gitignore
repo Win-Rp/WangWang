@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Env
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -24,6 +29,12 @@ dist-ssr
 *.sw?
 .vite
 
+# Trae IDE
+.trae/
+
 # Local Database
 *.db
 *.sqlite
+
+# Local fallback storage
+wangwang.fallback-db.json

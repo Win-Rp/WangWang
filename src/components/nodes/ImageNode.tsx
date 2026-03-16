@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Handle, Position, NodeProps } from '@xyflow/react';
+import { Handle, Position, NodeProps, useReactFlow } from '@xyflow/react';
 import { Upload, RotateCw, RotateCcw, ZoomIn, ZoomOut, Image as ImageIcon, RefreshCw } from 'lucide-react';
 
 interface ImageNodeData {
@@ -10,6 +10,7 @@ interface ImageNodeData {
 }
 
 export default function ImageNode({ data, id, selected }: NodeProps<any>) {
+  const { setNodes } = useReactFlow();
   const [imageUrl, setImageUrl] = useState<string | null>(data.imageUrl || null);
   const [rotation, setRotation] = useState(data.rotation || 0);
   const [scale, setScale] = useState(data.scale || 1);
@@ -17,10 +18,25 @@ export default function ImageNode({ data, id, selected }: NodeProps<any>) {
 
   // Sync internal state with data if needed (optional, for saving)
   useEffect(() => {
-    data.imageUrl = imageUrl;
-    data.rotation = rotation;
-    data.scale = scale;
-  }, [imageUrl, rotation, scale, data]);
+    const currentImageUrl = imageUrl || undefined;
+    // Check if values actually changed to avoid infinite loop
+    if (
+        data.imageUrl !== currentImageUrl || 
+        data.rotation !== rotation || 
+        data.scale !== scale
+    ) {
+        updateNodeData({ imageUrl: currentImageUrl, rotation, scale });
+    }
+  }, [imageUrl, rotation, scale, data.imageUrl, data.rotation, data.scale]);
+
+  const updateNodeData = (updates: Partial<ImageNodeData>) => {
+    setNodes((nds) => nds.map((node) => {
+      if (node.id === id) {
+        return { ...node, data: { ...node.data, ...updates } };
+      }
+      return node;
+    }));
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -28,7 +44,9 @@ export default function ImageNode({ data, id, selected }: NodeProps<any>) {
       const reader = new FileReader();
       reader.onload = (event) => {
         if (event.target?.result) {
-          setImageUrl(event.target.result as string);
+          const result = event.target.result as string;
+          setImageUrl(result);
+          // updateNodeData is handled by useEffect
         }
       };
       reader.readAsDataURL(file);

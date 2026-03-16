@@ -15,16 +15,18 @@ import {
   FinalConnectionState
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Settings, Plus, FileText, Film, Image as ImageIcon, Music, Play } from 'lucide-react';
+import { Settings, FileText, Film, Image as ImageIcon, Play, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import TextNode from '../components/nodes/TextNode';
 import ImageNode from '../components/nodes/ImageNode';
+import ImageGenNode from '../components/nodes/ImageGenNode';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
   text: TextNode,
-  image: ImageNode
+  image: ImageNode,
+  'image-gen': ImageGenNode
 };
 
 const INITIAL_NODES: Node[] = [];
@@ -33,6 +35,7 @@ const INITIAL_EDGES: Edge[] = [];
 const NODE_TYPES_LIST = [
   { type: 'text', label: '文本', icon: FileText },
   { type: 'image', label: '图片', icon: ImageIcon },
+  { type: 'image-gen', label: '图片生成', icon: Sparkles },
   { type: 'script', label: '剧本', icon: FileText },
   { type: 'storyboard', label: '分镜', icon: ImageIcon },
   { type: 'video', label: '视频', icon: Film },
@@ -42,7 +45,6 @@ function CanvasContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
   const [menu, setMenu] = useState<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
-  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string | null } | null>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, toObject, setViewport } = useReactFlow();
@@ -124,6 +126,32 @@ function CanvasContent() {
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
       if (!connectionState.isValid && connectionState.fromNode) {
+        if (connectionState.toNode) {
+          const sourceType = connectionState.fromNode.type;
+          const targetType = connectionState.toNode.type;
+
+          let targetHandle: string | null = null;
+          if (targetType === 'image-gen') {
+            if (sourceType === 'text') targetHandle = 'prompt-area';
+            if (sourceType === 'image') targetHandle = 'images';
+          }
+
+          setEdges((eds) =>
+            addEdge(
+              {
+                source: connectionState.fromNode!.id,
+                sourceHandle: connectionState.fromHandle?.id || null,
+                target: connectionState.toNode!.id,
+                targetHandle,
+              },
+              eds,
+            ),
+          )
+          setPendingConnection(null)
+          setMenu(null)
+          return
+        }
+
         const { clientX, clientY } = 'changedTouches' in event ? event.changedTouches[0] : event;
         const pane = reactFlowWrapper.current?.getBoundingClientRect();
         if (pane) {
@@ -145,13 +173,11 @@ function CanvasContent() {
 
   const onPaneClick = useCallback(() => {
     setMenu(null);
-    setSelectedNode(null);
     setPendingConnection(null);
   }, []);
 
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     event.stopPropagation(); // Prevent pane click
-    setSelectedNode(node);
     setMenu(null);
     setPendingConnection(null);
   }, []);
@@ -226,11 +252,18 @@ function CanvasContent() {
     setNodes((nds) => nds.concat(newNode));
     
     if (pendingConnection) {
+      let targetHandle: string | null = null;
+      if (type === 'image-gen') {
+        const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+        if (sourceNode?.type === 'text') targetHandle = 'prompt';
+        if (sourceNode?.type === 'image') targetHandle = 'images';
+      }
+
       setEdges((eds) => addEdge({
         source: pendingConnection.source,
         sourceHandle: pendingConnection.sourceHandle,
         target: nodeId,
-        targetHandle: null 
+        targetHandle
       }, eds));
       setPendingConnection(null);
     }

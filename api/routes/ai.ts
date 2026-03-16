@@ -1,65 +1,45 @@
-import express, { Request, Response } from 'express';
-import db from '../db/index.js';
+import express, { type Request, type Response } from 'express';
 
 const router = express.Router();
 
-// Generate Text
+// Mock AI text generation
 router.post('/generate-text', (req: Request, res: Response) => {
-  const { prompt, modelId } = req.body;
+  const { prompt, modelId, useNetworking } = req.body;
+  
+  // Simulate delay
+  setTimeout(() => {
+    res.json({ 
+      success: true, 
+      data: `[${modelId || 'Default Model'}] Generated content for: ${prompt} ${useNetworking ? '(Networked)' : ''}` 
+    });
+  }, 1000);
+});
 
-  if (!prompt || !modelId) {
-    res.status(400).json({ error: 'Prompt and modelId are required' });
-    return;
-  }
+// Mock AI image generation
+router.post('/generate-image', (req: Request, res: Response) => {
+  const { prompt, inputImages, quality, aspectRatio, modelId } = req.body;
+  
+  console.log('Generating image with params:', { prompt, inputImages, quality, aspectRatio, modelId });
 
-  // 1. Get API config for the model
-  const sql = `
-    SELECT ac.base_url, ac.api_key
-    FROM api_configs ac
-    JOIN models m ON ac.id = m.api_config_id
-    WHERE m.model_id = ? AND ac.category = 'text'
-  `;
+  // Simulate delay
+  setTimeout(() => {
+    // Generate a random image based on aspect ratio
+    let width = 1024;
+    let height = 1024;
 
-  db.get(sql, [modelId], async (err, config: any) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (!config) {
-      res.status(404).json({ error: 'Model configuration not found' });
-      return;
-    }
+    if (aspectRatio === '16:9') { width = 1024; height = 576; }
+    else if (aspectRatio === '9:16') { width = 576; height = 1024; }
+    else if (aspectRatio === '4:3') { width = 1024; height = 768; }
+    else if (aspectRatio === '3:4') { width = 768; height = 1024; }
+    
+    // Use a placeholder image service
+    const imageUrl = `https://picsum.photos/${width}/${height}?random=${Date.now()}`;
 
-    try {
-      // 2. Call External API (OpenAI Compatible)
-      const response = await fetch(`${config.base_url}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.api_key}`
-        },
-        body: JSON.stringify({
-          model: modelId,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.7
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.text();
-        throw new Error(`API Error: ${response.status} - ${errorData}`);
-      }
-
-      const data = await response.json();
-      const generatedText = data.choices?.[0]?.message?.content || '';
-
-      res.json({ data: generatedText });
-
-    } catch (error: any) {
-      console.error('AI Generation Error:', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
+    res.json({ 
+      success: true, 
+      imageUrl: imageUrl
+    });
+  }, 2000);
 });
 
 export default router;
