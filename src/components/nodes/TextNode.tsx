@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Handle, Position, NodeProps } from '@xyflow/react';
-import { Sparkles, Bot, ChevronDown, Check, Globe, ArrowUp } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Handle, Position, NodeProps, useReactFlow } from '@xyflow/react';
+import { Sparkles, Check, Globe } from 'lucide-react';
 
 interface TextNodeData {
   label: string;
@@ -10,12 +10,14 @@ interface TextNodeData {
   onContentChange?: (content: string) => void;
 }
 
-export default function TextNode({ data, id, selected }: NodeProps<any>) {
-  const [content, setContent] = useState(data.content || '');
-  const [prompt, setPrompt] = useState(data.prompt || '');
+export default function TextNode({ data, id, selected }: NodeProps) {
+  const nodeData = data as unknown as TextNodeData;
+  const { setNodes } = useReactFlow();
+  const [content, setContent] = useState<string>(nodeData.content || '');
+  const [prompt, setPrompt] = useState<string>(nodeData.prompt || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [models, setModels] = useState<{id: string, name: string}[]>([]);
-  const [selectedModel, setSelectedModel] = useState(data.modelId || '');
+  const [selectedModel, setSelectedModel] = useState(nodeData.modelId || '');
   const [isNetworking, setIsNetworking] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -33,10 +35,10 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
 
   // Update local state when data changes from outside
   useEffect(() => {
-    if (data.content !== undefined) setContent(data.content);
-    if (data.prompt !== undefined) setPrompt(data.prompt);
-    if (data.modelId !== undefined) setSelectedModel(data.modelId);
-  }, [data.content, data.prompt, data.modelId]);
+    if (nodeData.content !== undefined && nodeData.content !== content) setContent(nodeData.content);
+    if (nodeData.prompt !== undefined && nodeData.prompt !== prompt) setPrompt(nodeData.prompt);
+    if (nodeData.modelId !== undefined && nodeData.modelId !== selectedModel) setSelectedModel(nodeData.modelId);
+  }, [nodeData.content, nodeData.prompt, nodeData.modelId, content, prompt, selectedModel]);
 
   // Fetch available text models
   useEffect(() => {
@@ -59,6 +61,7 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
         setModels(availableModels);
         if (!selectedModel && availableModels.length > 0) {
           setSelectedModel(availableModels[0].id);
+          updateNodeData({ modelId: availableModels[0].id });
         }
       } catch (err) {
         console.error('Error fetching models:', err);
@@ -68,16 +71,34 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
     if (selected) {
       fetchModels();
     }
-  }, [selected, selectedModel]);
+  }, [selected]);
+
+  const updateNodeData = (updates: Partial<TextNodeData>) => {
+    setNodes((nds) => nds.map((node) => {
+      if (node.id === id) {
+        return { ...node, data: { ...node.data, ...updates } };
+      }
+      return node;
+    }));
+  };
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
     setContent(newContent);
-    data.onContentChange?.(newContent);
+    updateNodeData({ content: newContent });
+    nodeData.onContentChange?.(newContent);
   };
 
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setPrompt(e.target.value);
+    const newPrompt = e.target.value;
+    setPrompt(newPrompt);
+    updateNodeData({ prompt: newPrompt });
+  };
+
+  const handleModelSelect = (modelId: string) => {
+      setSelectedModel(modelId);
+      setIsModelMenuOpen(false);
+      updateNodeData({ modelId });
   };
 
   const handleGenerate = async () => {
@@ -99,7 +120,8 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
       if (json.data) {
         const newContent = json.data;
         setContent(newContent);
-        data.onContentChange?.(newContent);
+        updateNodeData({ content: newContent });
+        nodeData.onContentChange?.(newContent);
       } else {
         alert('生成失败: ' + (json.error || '未知错误'));
       }
@@ -118,7 +140,7 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
       {/* Header */}
       <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700">
         <div className="flex items-center space-x-2">
-          <span className="text-sm font-medium text-gray-200">{data.label || '文本节点'}</span>
+          <span className="text-sm font-medium text-gray-200">{nodeData.label || '文本节点'}</span>
         </div>
         {/* Handles */}
         <Handle type="target" position={Position.Left} className="w-3 h-3 bg-blue-500" />
@@ -171,10 +193,7 @@ export default function TextNode({ data, id, selected }: NodeProps<any>) {
                     {models.map(m => (
                       <button
                         key={m.id}
-                        onClick={() => {
-                          setSelectedModel(m.id);
-                          setIsModelMenuOpen(false);
-                        }}
+                        onClick={() => handleModelSelect(m.id)}
                         className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-700 transition-colors ${selectedModel === m.id ? 'bg-gray-700/50 text-blue-400' : 'text-gray-300'}`}
                       >
                         <span className="truncate">{m.name}</span>

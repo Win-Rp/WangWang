@@ -1,8 +1,8 @@
 /**
  * local server entry file, for local development
  */
-import app from './app.js';
-import { initDb } from './db/init.js';
+import app from './app.ts';
+import { initDb } from './db/init.ts';
 
 // Initialize database
 initDb();
@@ -10,11 +10,24 @@ initDb();
 /**
  * start server with port
  */
-const PORT = process.env.PORT || 3001;
+const basePort = Number(process.env.PORT) || 3001;
+let server: ReturnType<typeof app.listen>;
 
-const server = app.listen(PORT, () => {
-  console.log(`Server ready on port ${PORT}`);
-});
+const startServer = (port: number) => {
+  server = app.listen(port, () => {
+    console.log(`Server ready on port ${port}`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err?.code === 'EADDRINUSE' && port < basePort + 10) {
+      startServer(port + 1);
+      return;
+    }
+    throw err;
+  });
+};
+
+startServer(basePort);
 
 /**
  * close server

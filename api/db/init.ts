@@ -1,4 +1,4 @@
-import db from './index.js';
+import db from './index.ts';
 
 export const initDb = () => {
   const queries = [
