@@ -32,10 +32,12 @@ const PROVIDERS: Record<string, { name: string; baseUrl: string; models: string[
     { name: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', models: ['moonshot-v1-8k', 'moonshot-v1-32k'] },
   ],
   image: [
+    { name: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seedream-5-0-260128', 'doubao-seedream-3-0-t2i-250415'] },
     { name: 'Midjourney', baseUrl: '', models: ['mj-v6'] },
     { name: 'Stable Diffusion', baseUrl: '', models: ['sd-xl'] },
   ],
   video: [
+    { name: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seedance-1-5-pro-251215'] },
     { name: 'Runway', baseUrl: '', models: ['gen-2'] },
     { name: 'Pika', baseUrl: '', models: ['pika-1.0'] },
   ],
@@ -45,10 +47,18 @@ const PROVIDERS: Record<string, { name: string; baseUrl: string; models: string[
   ]
 };
 
+const normalizeProviderName = (provider: string) => {
+  if (provider === 'Volcengine') return '火山引擎';
+  return provider;
+};
+
 export default function Settings() {
   const [activeCategory, setActiveCategory] = useState('text');
   const [configs, setConfigs] = useState<ApiConfig[]>([]);
   const [loading, setLoading] = useState(true);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [customModelInput, setCustomModelInput] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingConfig, setEditingConfig] = useState<ApiConfig | null>(null);
 
@@ -65,11 +75,20 @@ export default function Settings() {
     fetchConfigs();
   }, []);
 
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 1600);
+  };
+
   const fetchConfigs = async () => {
     try {
       const response = await fetch('/api/settings/apis');
       const data = await response.json();
-      setConfigs(data.data || []);
+      const normalized = (data.data || []).map((config: ApiConfig) => ({
+        ...config,
+        provider: normalizeProviderName(config.provider),
+      }));
+      setConfigs(normalized);
       setLoading(false);
     } catch (error) {
       console.error('Error fetching configs:', error);
@@ -84,11 +103,20 @@ export default function Settings() {
     
     const method = editingConfig ? 'PUT' : 'POST';
     
+    const existingModels = formData.models || [];
+    const fallbackDefaultModelId = existingModels[0]?.model_id;
+    const defaultModelId = existingModels.find((m: any) => m.is_default)?.model_id || fallbackDefaultModelId;
+    const normalizedModels = existingModels.map((m: any) => ({
+      ...m,
+      name: m.model_id,
+      is_default: m.model_id === defaultModelId,
+    }));
+
     try {
       const response = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, category: activeCategory }),
+        body: JSON.stringify({ ...formData, models: normalizedModels, provider: normalizeProviderName(formData.provider || ''), category: activeCategory }),
       });
       
       if (response.ok) {
@@ -96,6 +124,7 @@ export default function Settings() {
         setEditingConfig(null);
         setFormData({ category: activeCategory, provider: '', base_url: '', api_key: '', models: [] });
         fetchConfigs();
+        showToast('配置已保存');
       }
     } catch (error) {
       console.error('Error saving config:', error);
@@ -113,9 +142,29 @@ export default function Settings() {
     }
   };
 
+  const handleTestConfig = async (config: ApiConfig) => {
+    setTestingId(config.id);
+    try {
+      const response = await fetch(`/api/settings/apis/${config.id}/test`, { method: 'POST' });
+      const json = await response.json();
+      if (response.ok && json?.success) {
+        showToast(`测试成功：${config.provider} 配置可用`);
+      } else {
+        showToast(`测试失败：${json?.message || '未知错误'}`);
+      }
+    } catch (error: any) {
+      showToast(`测试失败：${error?.message || '网络异常'}`);
+    } finally {
+      setTestingId(null);
+    }
+  };
+
   const openEditModal = (config: ApiConfig) => {
-    setEditingConfig(config);
-    setFormData(config);
+    const sortedModels = [...(config.models || [])].sort((a: any, b: any) => Number(!!b.is_default) - Number(!!a.is_default));
+    const normalizedConfig = { ...config, provider: normalizeProviderName(config.provider), models: sortedModels };
+    setEditingConfig(normalizedConfig);
+    setFormData(normalizedConfig);
+    setCustomModelInput('');
     setShowAddModal(true);
   };
 
@@ -128,6 +177,7 @@ export default function Settings() {
       api_key: '',
       models: []
     });
+    setCustomModelInput('');
     setShowAddModal(true);
   };
 
@@ -140,11 +190,11 @@ export default function Settings() {
         ...formData,
         provider: providerName,
         base_url: providerConfig.baseUrl,
-        models: providerConfig.models.map((mid, index) => ({
-          model_id: mid,
-          name: mid, // Use model_id as name since we hide name input
-          is_default: index === 0
-        }))
+        models: providerConfig.models.length > 0 ? [{
+          model_id: providerConfig.models[0],
+          name: providerConfig.models[0],
+          is_default: true
+        }] : []
       });
     } else {
       setFormData({
@@ -154,9 +204,61 @@ export default function Settings() {
         models: []
       });
     }
+    setCustomModelInput('');
   };
 
   const filteredConfigs = configs.filter(c => c.category === activeCategory);
+  const selectedProviderConfig = PROVIDERS[activeCategory]?.find((p) => p.name === normalizeProviderName(formData.provider || ''));
+  const integratedModelIds = selectedProviderConfig?.models || [];
+  const selectedModels = formData.models || [];
+
+  const removeModel = (modelId: string) => {
+    const nextModels = selectedModels.filter((m: any) => m.model_id !== modelId);
+    if (nextModels.length > 0 && !nextModels.some((m: any) => m.is_default)) {
+      nextModels[0].is_default = true;
+    }
+    setFormData({ ...formData, models: nextModels });
+  };
+
+  const toggleIntegratedModel = (modelId: string) => {
+    const exists = selectedModels.some((m: any) => m.model_id === modelId);
+    if (exists) {
+      removeModel(modelId);
+      showToast(`已停用模型：${modelId}`);
+      return;
+    }
+    const nextModels = [
+      ...selectedModels,
+      { model_id: modelId, name: modelId, is_default: selectedModels.length === 0 }
+    ];
+    setFormData({ ...formData, models: nextModels });
+    showToast(`已启用模型：${modelId}`);
+  };
+
+  const setModelAsDefault = (modelId: string) => {
+    const exists = selectedModels.some((m: any) => m.model_id === modelId);
+    const nextModels = exists
+      ? selectedModels.map((m: any) => ({ ...m, is_default: m.model_id === modelId }))
+      : [...selectedModels, { model_id: modelId, name: modelId, is_default: true }].map((m: any) => ({ ...m, is_default: m.model_id === modelId }));
+    setFormData({ ...formData, models: nextModels });
+    showToast(`默认模型已设置为：${modelId}`);
+  };
+
+  const addCustomModel = () => {
+    const modelId = customModelInput.trim();
+    if (!modelId) return;
+    if (selectedModels.some((m: any) => m.model_id === modelId)) {
+      setCustomModelInput('');
+      return;
+    }
+    const nextModels = [
+      ...selectedModels,
+      { model_id: modelId, name: modelId, is_default: selectedModels.length === 0 }
+    ];
+    setFormData({ ...formData, models: nextModels });
+    setCustomModelInput('');
+    showToast(`已添加自定义模型：${modelId}`);
+  };
 
   return (
     <div className="min-h-screen bg-[#1a1a1a] text-white p-8">
@@ -187,6 +289,22 @@ export default function Settings() {
 
         {/* Config List */}
         <div className="space-y-4">
+          {activeCategory === 'image' && (
+            <div className="mb-4 rounded-lg border border-blue-800/40 bg-blue-950/20 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-blue-200">Seedream 对接说明（OpenAI 兼容格式）</p>
+                <a
+                  href="https://www.volcengine.com/docs/82379/1824121?lang=zh#8bc49063"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center rounded-md border border-blue-700 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-900/40 transition-colors"
+                >
+                  查看官方文档
+                </a>
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="text-center text-gray-400 py-8">加载中...</div>
           ) : filteredConfigs.length === 0 ? (
@@ -217,6 +335,13 @@ export default function Settings() {
                       <p className="text-gray-400 text-sm">{config.base_url}</p>
                     </div>
                     <div className="flex space-x-2">
+                      <button
+                        onClick={() => handleTestConfig(config)}
+                        disabled={testingId === config.id}
+                        className="px-2 py-1 text-xs rounded border border-emerald-700 text-emerald-300 hover:bg-emerald-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {testingId === config.id ? '测试中...' : '测试'}
+                      </button>
                       <button 
                         onClick={() => openEditModal(config)}
                         className="p-2 hover:bg-gray-700 rounded transition-colors text-gray-300"
@@ -307,68 +432,71 @@ export default function Settings() {
               </div>
               
               <div className="border-t border-gray-800 pt-4 mt-4">
-                <div className="flex justify-between items-center mb-2">
-                  <label className="block text-sm font-medium text-gray-400">模型列表</label>
-                  <button 
-                    onClick={() => {
-                      const newModels = [...(formData.models || [])];
-                      newModels.push({ model_id: '', name: '', is_default: newModels.length === 0 });
-                      setFormData({...formData, models: newModels});
-                    }}
-                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center"
-                  >
-                    <Plus size={12} className="mr-1" /> 添加模型
-                  </button>
+                <div className="mb-2">
+                  <label className="block text-sm font-medium text-gray-400">模型配置</label>
                 </div>
-                
-                <div className="space-y-3">
-                  {formData.models?.map((model: any, index: number) => (
-                    <div key={index} className="flex gap-2 items-center">
-                      <div className="flex-1">
-                        <input
-                          type="text"
-                          value={model.model_id}
-                          onChange={e => {
-                            const newModels = [...(formData.models || [])];
-                            newModels[index].model_id = e.target.value;
-                            newModels[index].name = e.target.value; // Sync name with ID
-                            setFormData({...formData, models: newModels});
-                          }}
-                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-                          placeholder="模型ID (gpt-4)"
-                        />
-                      </div>
-                      <div className="flex items-center">
-                        <input
-                          type="radio"
-                          name="default_model"
-                          checked={model.is_default}
-                          onChange={() => {
-                            const newModels = (formData.models || []).map((m: any, i: number) => ({
-                              ...m,
-                              is_default: i === index
-                            }));
-                            setFormData({...formData, models: newModels});
-                          }}
-                          className="mr-2"
-                        />
-                        <span className="text-xs text-gray-400 mr-2">默认</span>
-                        <button
-                          onClick={() => {
-                            const newModels = (formData.models || []).filter((_: any, i: number) => i !== index);
-                            if (model.is_default && newModels.length > 0) {
-                              newModels[0].is_default = true;
-                            }
-                            setFormData({...formData, models: newModels});
-                          }}
-                          className="text-red-400 hover:text-red-300 p-1"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
+
+                <div className="mb-3 rounded-lg border border-gray-800 p-3">
+                  <div className="text-xs text-gray-400 mb-2">模型列表（双击设为默认；若未开启会自动开启）</div>
+                  {integratedModelIds.length > 0 ? (
+                    <div className="space-y-2">
+                      {integratedModelIds.map((modelId) => {
+                        const selectedModel = selectedModels.find((m: any) => m.model_id === modelId);
+                        const isEnabled = !!selectedModel;
+                        const isDefault = !!selectedModel?.is_default;
+                        return (
+                          <div
+                            key={modelId}
+                            onDoubleClick={() => setModelAsDefault(modelId)}
+                            className="flex items-center justify-between bg-gray-800/60 border border-gray-700 rounded px-3 py-2"
+                            title="双击设为默认模型"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-sm text-gray-200 break-all">{modelId}</span>
+                              {isDefault && <span className="text-[10px] px-2 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700/50">默认</span>}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleIntegratedModel(modelId);
+                              }}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
+                            >
+                              <span className={`inline-block h-5 w-5 rounded-full bg-white transition-transform ${isEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
+                  ) : (
+                    <div className="text-xs text-gray-500">当前服务商暂无内置对接模型</div>
+                  )}
                 </div>
+
+                <div className="mb-3 rounded-lg border border-amber-800/40 bg-amber-950/20 p-3">
+                  <div className="text-xs text-amber-200 mb-2">自定义模型</div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={customModelInput}
+                      onChange={(e) => setCustomModelInput(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
+                      placeholder="输入自定义模型ID"
+                    />
+                    <button
+                      onClick={addCustomModel}
+                      className="px-3 py-1.5 text-xs bg-amber-700 hover:bg-amber-600 rounded text-white"
+                    >
+                      添加
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-amber-300/90 mt-2">
+                    提示：自定义模型未经过当前系统对接验证，可能存在无法调用的情况。
+                  </div>
+                </div>
+
+                
               </div>
             </div>
             
@@ -387,6 +515,11 @@ export default function Settings() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {toast && (
+        <div className="fixed top-6 right-6 z-[70] px-3 py-2 rounded-md bg-gray-900 border border-gray-700 text-xs text-gray-100 shadow-xl">
+          {toast}
         </div>
       )}
     </div>

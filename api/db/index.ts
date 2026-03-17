@@ -127,7 +127,7 @@ try {
       console.log('Connected to the SQLite database.')
     }
   })
-} catch (err: any) {
+} catch (_err: any) {
   console.warn('SQLite bindings unavailable, using fallback JSON DB.')
   db = createFallbackDb()
 }

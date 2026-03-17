@@ -3,6 +3,16 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.ts';
 
 const router = express.Router();
+const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '');
+
+type ConfigRow = {
+  id: string;
+  category: string;
+  provider: string;
+  base_url: string;
+  api_key: string;
+  model_id: string | null;
+};
 
 // Get all API configs
 router.get('/apis', (req: Request, res: Response) => {
@@ -80,6 +90,86 @@ router.post('/apis', (req: Request, res: Response) => {
   });
 });
 
+router.post('/apis/:id/test', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const sql = `
+    SELECT
+      ac.id,
+      ac.category,
+      ac.provider,
+      ac.base_url,
+      ac.api_key,
+      m.model_id
+    FROM api_configs ac
+    LEFT JOIN models m ON ac.id = m.api_config_id
+    WHERE ac.id = ?
+  `;
+
+  try {
+    const rows = await new Promise<ConfigRow[]>((resolve, reject) => {
+      db.all(sql, [id], (err, resultRows?: ConfigRow[]) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(resultRows || []);
+      });
+    });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: '未找到配置。' });
+    }
+
+    const config = rows[0];
+    if (!config.base_url || !config.api_key) {
+      return res.status(400).json({ success: false, message: 'Base URL 或 API Key 为空，无法测试。' });
+    }
+
+    const testUrl = `${normalizeBaseUrl(config.base_url)}/models`;
+    console.log('[API Test] 开始测试配置:', {
+      id: config.id,
+      category: config.category,
+      provider: config.provider,
+      testUrl,
+      modelsCount: rows.filter((r) => !!r.model_id).length,
+    });
+
+    const upstream = await fetch(testUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${config.api_key}`,
+      },
+    });
+
+    const result = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      const message = result?.error?.message || result?.message || `测试失败(${upstream.status})`;
+      console.warn('[API Test] 测试失败:', { id: config.id, status: upstream.status, message });
+      return res.status(upstream.status).json({ success: false, message });
+    }
+
+    console.log('[API Test] 测试成功:', {
+      id: config.id,
+      provider: config.provider,
+      status: upstream.status,
+      modelListCount: Array.isArray(result?.data) ? result.data.length : 0,
+    });
+
+    return res.json({
+      success: true,
+      message: '连接测试成功',
+      detail: {
+        status: upstream.status,
+        modelListCount: Array.isArray(result?.data) ? result.data.length : 0,
+      },
+    });
+  } catch (error: any) {
+    console.error('[API Test] 测试异常:', error);
+    return res.status(500).json({ success: false, message: error?.message || '测试请求失败。' });
+  }
+});
+
 // Update API config
 router.put('/apis/:id', (req: Request, res: Response) => {
   const { id } = req.params;
@@ -97,7 +187,6 @@ router.put('/apis/:id', (req: Request, res: Response) => {
     }
     
     if (models && Array.isArray(models)) {
-      // Logic for updating models was cut off in previous read, I'll complete it reasonably
       db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         
@@ -111,9 +200,16 @@ router.put('/apis/:id', (req: Request, res: Response) => {
         `;
         
         let completed = 0;
+        let hasError = false;
         models.forEach((model: any) => {
+          if (hasError) return;
           const modelId = uuidv4();
-          db.run(insertModelSql, [modelId, id, model.model_id, model.name, model.is_default ? 1 : 0], (err) => {
+          db.run(insertModelSql, [modelId, id, model.model_id, model.name, model.is_default ? 1 : 0], (_err) => {
+            if (_err) {
+              hasError = true;
+              res.status(500).json({ error: _err.message });
+              return;
+            }
             completed++;
             if (completed === models.length) {
               res.status(200).json({ message: 'API config updated successfully' });
@@ -132,7 +228,8 @@ router.delete('/apis/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   db.run('DELETE FROM api_configs WHERE id = ?', [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
-    db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
+    db.run('DELETE FROM models WHERE api_config_id = ?', [id], (_err) => {
+      if (_err) return res.status(500).json({ error: _err.message });
       res.json({ message: 'API config deleted successfully' });
     });
   });

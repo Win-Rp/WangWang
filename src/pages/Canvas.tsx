@@ -2,6 +2,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   ReactFlow,
   Controls,
+  MiniMap,
+  Panel,
   Background,
   useNodesState,
   useEdgesState,
@@ -10,6 +12,7 @@ import {
   Edge,
   Node,
   useReactFlow,
+  useViewport,
   ReactFlowProvider,
   BackgroundVariant,
   FinalConnectionState
@@ -21,16 +24,71 @@ import { Link } from 'react-router-dom';
 import TextNode from '../components/nodes/TextNode';
 import ImageNode from '../components/nodes/ImageNode';
 import ImageGenNode from '../components/nodes/ImageGenNode';
+import VideoGenNode from '../components/nodes/VideoGenNode';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
   text: TextNode,
   image: ImageNode,
-  'image-gen': ImageGenNode
+  'image-gen': ImageGenNode,
+  video: VideoGenNode
 };
 
 const INITIAL_NODES: Node[] = [];
 const INITIAL_EDGES: Edge[] = [];
+
+function ZoomDisplay() {
+  const { zoom } = useViewport();
+  const { zoomTo } = useReactFlow();
+  const [inputValue, setInputValue] = useState<string>('');
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setInputValue(Math.round(zoom * 100).toString());
+    }
+  }, [zoom, isEditing]);
+
+  const handleCommit = () => {
+    setIsEditing(false);
+    let val = parseInt(inputValue, 10);
+    if (isNaN(val)) {
+      setInputValue(Math.round(zoom * 100).toString());
+      return;
+    }
+    val = Math.max(10, Math.min(val, 300)); // Limit 10% - 300%
+    zoomTo(val / 100, { duration: 300 });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleCommit();
+    }
+  };
+
+  return (
+    <Panel position="bottom-left" className="bg-gray-800 text-white px-2 py-1 rounded text-xs border border-gray-700 select-none ml-14">
+      {isEditing ? (
+        <div className="flex items-center">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onBlur={handleCommit}
+            onKeyDown={handleKeyDown}
+            className="w-8 bg-transparent outline-none text-center"
+            autoFocus
+          />
+          <span>%</span>
+        </div>
+      ) : (
+        <span onClick={() => setIsEditing(true)} className="cursor-pointer min-w-[2rem] text-center inline-block">
+          {Math.round(zoom * 100)}%
+        </span>
+      )}
+    </Panel>
+  );
+}
 
 const NODE_TYPES_LIST = [
   { type: 'text', label: '文本', icon: FileText },
@@ -38,7 +96,7 @@ const NODE_TYPES_LIST = [
   { type: 'image-gen', label: '图片生成', icon: Sparkles },
   { type: 'script', label: '剧本', icon: FileText },
   { type: 'storyboard', label: '分镜', icon: ImageIcon },
-  { type: 'video', label: '视频', icon: Film },
+  { type: 'video', label: '视频生成', icon: Film },
 ];
 
 function CanvasContent() {
@@ -49,6 +107,31 @@ function CanvasContent() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, toObject, setViewport } = useReactFlow();
   const [projectId, setProjectId] = useState<string | null>(null);
+
+  const saveProject = useCallback(async () => {
+    if (!projectId) return;
+    
+    const flow = toObject();
+    try {
+      await fetch(`/api/projects/${projectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          canvas_data: flow
+        })
+      });
+      console.log('Project auto-saved');
+    } catch (error) {
+      console.error('Error saving project:', error);
+    }
+  }, [projectId, toObject]);
+
+  // Auto-save on unmount
+  useEffect(() => {
+    return () => {
+      saveProject();
+    };
+  }, [saveProject]);
 
   // Load latest project on mount
   useEffect(() => {
@@ -99,7 +182,7 @@ function CanvasContent() {
     }
   };
 
-  const saveProject = async () => {
+  const handleManualSave = async () => {
     if (!projectId) return;
     
     const flow = toObject();
@@ -133,6 +216,10 @@ function CanvasContent() {
           let targetHandle: string | null = null;
           if (targetType === 'image-gen') {
             if (sourceType === 'text') targetHandle = 'prompt-area';
+            if (sourceType === 'image') targetHandle = 'images';
+          }
+          if (targetType === 'video') {
+            if (sourceType === 'text') targetHandle = 'prompt';
             if (sourceType === 'image') targetHandle = 'images';
           }
 
@@ -176,7 +263,7 @@ function CanvasContent() {
     setPendingConnection(null);
   }, []);
 
-  const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+  const onNodeClick = useCallback((event: React.MouseEvent, _node: Node) => {
     event.stopPropagation(); // Prevent pane click
     setMenu(null);
     setPendingConnection(null);
@@ -253,16 +340,87 @@ function CanvasContent() {
     
     if (pendingConnection) {
       let targetHandle: string | null = null;
-      if (type === 'image-gen') {
-        const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
-        if (sourceNode?.type === 'text') targetHandle = 'prompt';
-        if (sourceNode?.type === 'image') targetHandle = 'images';
+      let sourceHandle: string | null = pendingConnection.sourceHandle;
+      let source = pendingConnection.source;
+      let target = nodeId;
+
+      // Check if connection started from an ImageGenNode input handle (left side)
+      // This means we are dragging FROM an input TO create a source node (reverse connection)
+      const pendingNode = nodes.find(n => n.id === pendingConnection.source);
+      if (pendingNode?.type === 'image-gen') {
+        // List of input handles on ImageGenNode
+        const inputHandles = ['images', 'prompt', 'image-input', 'prompt-area', 'text-input'];
+        if (sourceHandle && inputHandles.includes(sourceHandle)) {
+            // Reverse the connection: New Node -> ImageGenNode
+            source = nodeId;
+            target = pendingConnection.source;
+            targetHandle = sourceHandle;
+            sourceHandle = null; // New node uses default source handle
+            
+            // Validate compatibility based on new node type
+            if (type === 'image') {
+                if (targetHandle === 'prompt' || targetHandle === 'prompt-area' || targetHandle === 'text-input') {
+                    // Image node cannot connect to text input
+                    console.warn('Cannot connect Image node to Text input');
+                    setPendingConnection(null);
+                    setMenu(null);
+                    return; 
+                }
+            } else if (type === 'text') {
+                if (targetHandle === 'images' || targetHandle === 'image-input') {
+                    // Text node cannot connect to image input
+                     console.warn('Cannot connect Text node to Image input');
+                     setPendingConnection(null);
+                     setMenu(null);
+                     return;
+                }
+            }
+        }
+      }
+      if (pendingNode?.type === 'video') {
+        const inputHandles = ['images', 'prompt', 'image-input', 'text-input'];
+        if (sourceHandle && inputHandles.includes(sourceHandle)) {
+          source = nodeId;
+          target = pendingConnection.source;
+          targetHandle = sourceHandle;
+          sourceHandle = null;
+          if (type === 'image' && targetHandle === 'prompt') {
+            setPendingConnection(null);
+            setMenu(null);
+            return;
+          }
+          if (type === 'text' && (targetHandle === 'images' || targetHandle === 'image-input')) {
+            setPendingConnection(null);
+            setMenu(null);
+            return;
+          }
+        }
+      }
+
+      // Normal connection logic (Source Node -> New Node)
+      if (source === pendingConnection.source) {
+          if (type === 'image-gen') {
+            const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+            if (sourceNode?.type === 'text') targetHandle = 'prompt';
+            if (sourceNode?.type === 'image') targetHandle = 'images';
+          }
+          if (type === 'video') {
+            const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+            if (sourceNode?.type === 'text') targetHandle = 'prompt';
+            if (sourceNode?.type === 'image') targetHandle = 'images';
+          }
+          
+          // Handle connection from ImageGenNode to ImageNode (or other nodes)
+          if (type === 'image' && pendingConnection.sourceHandle === 'output') {
+             // ImageNode does not have specific input handles, it uses the default Left handle
+             // So we don't need to set targetHandle (it will be null, which means default handle)
+          }
       }
 
       setEdges((eds) => addEdge({
-        source: pendingConnection.source,
-        sourceHandle: pendingConnection.sourceHandle,
-        target: nodeId,
+        source,
+        sourceHandle,
+        target,
         targetHandle
       }, eds));
       setPendingConnection(null);
@@ -286,7 +444,7 @@ function CanvasContent() {
           <Link to="/settings" className="p-2 text-gray-400 hover:text-white transition-colors">
             <Settings size={20} />
           </Link>
-          <button onClick={saveProject} className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-colors">
+          <button onClick={handleManualSave} className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-colors">
             保存
           </button>
           <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-colors flex items-center">
@@ -313,7 +471,6 @@ function CanvasContent() {
           onNodeClick={onNodeClick}
           onPaneContextMenu={onPaneContextMenu}
           nodeTypes={nodeTypes}
-          fitView
           colorMode="dark"
           panOnScroll
           selectionOnDrag
@@ -323,6 +480,21 @@ function CanvasContent() {
         >
           <Background color="#333" variant={BackgroundVariant.Dots} />
           <Controls />
+          <MiniMap 
+            style={{ height: 120 }} 
+            zoomable 
+            pannable 
+            className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden"
+            nodeColor={(n) => {
+              if (n.type === 'image') return '#3b82f6';
+              if (n.type === 'image-gen') return '#8b5cf6';
+              if (n.type === 'video') return '#06b6d4';
+              if (n.type === 'text') return '#10b981';
+              return '#fff';
+            }}
+            maskColor="rgba(0, 0, 0, 0.6)"
+          />
+          <ZoomDisplay />
         </ReactFlow>
 
         {/* Context Menu for Adding Nodes */}

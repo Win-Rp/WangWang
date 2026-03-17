@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Handle, Position, NodeProps, useReactFlow } from '@xyflow/react';
-import { Sparkles, Check, Globe } from 'lucide-react';
+import { Handle, Position, NodeProps, useReactFlow, NodeResizer } from '@xyflow/react';
+import { Sparkles, Check, Globe, Trash2 } from 'lucide-react';
 
 interface TextNodeData {
   label: string;
@@ -21,6 +21,8 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   const [isNetworking, setIsNetworking] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const contentTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Close model menu when clicking outside
   useEffect(() => {
@@ -82,6 +84,20 @@ export default function TextNode({ data, id, selected }: NodeProps) {
     }));
   };
 
+  const autoResizeTextarea = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
+  useEffect(() => {
+    autoResizeTextarea(contentTextareaRef.current);
+  }, [content]);
+
+  useEffect(() => {
+    autoResizeTextarea(promptTextareaRef.current);
+  }, [prompt, selected]);
+
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
     setContent(newContent);
@@ -136,24 +152,41 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   const currentModelName = models.find(m => m.id === selectedModel)?.name || '选择模型';
 
   return (
-    <div className={`bg-gray-900 border-2 rounded-lg shadow-xl w-72 transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'}`}>
+    <div className={`bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[200px] min-h-[150px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'}`}>
+      
+      <NodeResizer minWidth={200} minHeight={150} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
+
       {/* Header */}
-      <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700">
+      <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700 group/header">
         <div className="flex items-center space-x-2">
           <span className="text-sm font-medium text-gray-200">{nodeData.label || '文本节点'}</span>
         </div>
+        
+        {/* Delete Button */}
+        <button 
+            className="p-1 hover:bg-red-900/50 rounded text-gray-500 hover:text-red-400 transition-colors ml-auto mr-2 opacity-0 group-hover/header:opacity-100"
+            onClick={(e) => {
+                e.stopPropagation();
+                setNodes(nds => nds.filter(n => n.id !== id));
+            }}
+        >
+            <Trash2 size={14} />
+        </button>
+
         {/* Handles */}
-        <Handle type="target" position={Position.Left} className="w-3 h-3 bg-blue-500" />
-        <Handle type="source" position={Position.Right} className="w-3 h-3 bg-blue-500" />
+        <Handle type="target" position={Position.Left} className="w-3 h-3 bg-blue-500 z-50" />
+        <Handle type="source" position={Position.Right} className="w-3 h-3 bg-blue-500 z-50" />
       </div>
 
       {/* Content Area */}
-      <div className="p-3 border-b border-gray-800">
+      <div className="p-3 border-b border-gray-800 flex-1 flex flex-col min-h-0">
         <textarea
-          className="nodrag w-full h-24 bg-gray-950 text-gray-200 p-2 rounded border border-gray-700 focus:border-blue-500 outline-none resize-y text-sm font-mono"
+          ref={contentTextareaRef}
+          className="nodrag w-full h-full min-w-0 bg-gray-950 text-gray-200 p-2 rounded border border-gray-700 focus:border-blue-500 outline-none resize-none text-sm font-mono"
           placeholder="输入文本内容..."
           value={content}
           onChange={handleContentChange}
+          style={{ overflow: 'hidden', overflowWrap: 'anywhere', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
         />
       </div>
 
@@ -163,10 +196,12 @@ export default function TextNode({ data, id, selected }: NodeProps) {
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col gap-3 shadow-sm">
             {/* Top: Prompt Input */}
             <textarea
-              className="nodrag w-full bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none resize-none h-16 leading-relaxed"
+              ref={promptTextareaRef}
+              className="nodrag w-full min-w-0 bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none resize-none h-16 leading-relaxed"
               placeholder="输入 AI 提示词..."
               value={prompt}
               onChange={handlePromptChange}
+              style={{ overflow: 'hidden', overflowWrap: 'anywhere', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Handle, NodeProps, Position, useEdges, useNodes, useReactFlow } from '@xyflow/react';
-import { Check, Image as ImageIcon, Monitor, Smartphone, SlidersHorizontal, Sparkles, Square, LayoutTemplate, X } from 'lucide-react';
+import { Handle, NodeProps, Position, useEdges, useNodes, useReactFlow, NodeResizer } from '@xyflow/react';
+import { Check, Image as ImageIcon, Monitor, Smartphone, SlidersHorizontal, Sparkles, Square, LayoutTemplate, X, Trash2 } from 'lucide-react';
 
 const ASPECT_RATIOS = [
   { label: '1:1', value: '1:1', icon: Square },
@@ -31,12 +31,6 @@ interface ImageGenNodeData {
 type PromptSegment =
   | { t: 'text'; v: string }
   | { t: 'img'; id: string; label: string; url?: string | null };
-
-function toCssAspectRatio(value: string) {
-  const [w, h] = value.split(':');
-  if (!w || !h) return undefined;
-  return `${w} / ${h}`;
-}
 
 export default function ImageGenNode({ data, id, selected }: NodeProps) {
   const nodeData = data as unknown as ImageGenNodeData;
@@ -98,14 +92,19 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
       }
     }
 
+    // Sort image nodes by Y position to maintain consistent order
+    imageNodes.sort((a, b) => a.position.y - b.position.y);
+
     return {
       upstreamTextNode: textNodes[0] || null,
-      upstreamImageNodes: imageNodes
+      upstreamImageNodes: imageNodes,
+      hasOutputConnection: edges.some(e => e.source === id && e.sourceHandle === 'output')
     };
   }, [edges, id, nodes]);
 
   const upstreamTextNode = incoming.upstreamTextNode;
   const upstreamImageNodes = incoming.upstreamImageNodes;
+  const hasOutputConnection = incoming.hasOutputConnection;
 
   // Update prompt from upstream text node if connected
   useEffect(() => {
@@ -202,22 +201,56 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   const handleGenerate = async () => {
     setIsGenerating(true);
     try {
+      // Process prompt: Replace image tokens with their labels (e.g., 图片1)
+      let processedPrompt = prompt;
+      if (promptRich) {
+         processedPrompt = promptRich.map(seg => {
+             if (seg.t === 'img') return seg.label;
+             return seg.v;
+         }).join('');
+      }
+
       const response = await fetch('/api/ai/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: upstreamTextNode ? (upstreamTextNode.data.content as string) : prompt,
+          prompt: upstreamTextNode ? (upstreamTextNode.data.content as string) : processedPrompt,
           inputImages: upstreamImageNodes.map(n => n?.data.imageUrl).filter(Boolean),
           modelId: selectedModel,
           quality,
           aspectRatio
         })
       });
+      console.log('[ImageGenNode] 请求参数:', {
+        prompt: upstreamTextNode ? (upstreamTextNode.data.content as string) : processedPrompt,
+        inputImages: upstreamImageNodes.map(n => n?.data.imageUrl).filter(Boolean),
+        modelId: selectedModel,
+        quality,
+        aspectRatio
+      });
       
       const result = await response.json();
+      console.log('[ImageGenNode] 接口返回:', result);
       if (result.success && result.imageUrl) {
         setGeneratedImage(result.imageUrl);
         updateNodeData({ generatedImage: result.imageUrl });
+        
+        // Propagate to connected image nodes
+        const outputEdges = edges.filter(e => e.source === id);
+        const byId = new Map(nodes.map(n => [n.id, n]));
+        
+        outputEdges.forEach(edge => {
+            const targetNode = byId.get(edge.target);
+            if (targetNode && targetNode.type === 'image') {
+                setNodes(nds => nds.map(n => {
+                    if (n.id === targetNode.id) {
+                        return { ...n, data: { ...n.data, imageUrl: result.imageUrl } };
+                    }
+                    return n;
+                }));
+            }
+        });
+
       } else {
         alert('生成失败: ' + (result.error || '未知错误'));
       }
@@ -527,17 +560,31 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-80 transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'}`}>
+    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[320px] min-h-[200px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'}`}>
       
       {/* Header */}
-      <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700">
+      <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700 group/header">
         <div className="flex items-center space-x-2">
           <ImageIcon size={16} className="text-purple-400" />
           <span className="text-sm font-medium text-gray-200">{nodeData.label || '图片生成'}</span>
         </div>
+        
+        {/* Delete Button */}
+        <button 
+            className="p-1 hover:bg-red-900/50 rounded text-gray-500 hover:text-red-400 transition-colors ml-auto mr-2 opacity-0 group-hover/header:opacity-100"
+            onClick={(e) => {
+                e.stopPropagation();
+                setNodes(nds => nds.filter(n => n.id !== id));
+            }}
+        >
+            <Trash2 size={14} />
+        </button>
+
         {/* Output Handle */}
-        <Handle type="source" position={Position.Right} id="output" className="w-3 h-3 bg-purple-500" />
+        <Handle type="source" position={Position.Right} id="output" className="w-3 h-3 bg-purple-500 z-50" />
       </div>
+
+      <NodeResizer minWidth={300} minHeight={200} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
 
       {/* Input Images (Top) */}
       <div className="p-3 border-b border-gray-800">
@@ -549,7 +596,42 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
           <div className="flex gap-2 overflow-x-auto pb-2 min-h-[44px] bg-gray-950/50 rounded p-1 border border-dashed border-gray-800">
             {referenceImages.length > 0 ? (
               referenceImages.map((node) => (
-                <div key={node.id} className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900">
+                <div 
+                  key={node.id} 
+                  className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
+                  onClick={() => {
+                    // Insert reference to prompt editor
+                    const token = {
+                      id: node.id,
+                      label: `图片${referenceImages.findIndex(n => n.id === node.id) + 1}`,
+                      url: node.url
+                    };
+                    
+                    // Append to end if no selection
+                    const editor = promptEditorRef.current;
+                    if (editor) {
+                       const segments = readSegmentsFromEditor();
+                       const newSegments = [...segments, { t: 'text' as const, v: ' ' }, { t: 'img' as const, id: token.id, label: token.label, url: token.url }];
+                       const plain = segmentsToPlainText(newSegments);
+                       setPromptRich(newSegments);
+                       setPrompt(plain);
+                       updateNodeData({ prompt: plain, promptRich: newSegments });
+                       
+                       // Focus editor
+                       setTimeout(() => {
+                           editor.focus();
+                           // Move caret to end
+                           const range = document.createRange();
+                           range.selectNodeContents(editor);
+                           range.collapse(false);
+                           const sel = window.getSelection();
+                           sel?.removeAllRanges();
+                           sel?.addRange(range);
+                       }, 0);
+                    }
+                  }}
+                  title="点击插入到提示词"
+                >
                   {node.url ? (
                     <img src={node.url} alt="Input" className="w-full h-full object-contain" />
                   ) : (
@@ -564,18 +646,20 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
             )}
           </div>
 
-          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-purple-500" style={{ top: 44, left: -6 }} />
+          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-purple-500 z-50" style={{ top: 44, left: -6 }} />
           <Handle type="target" position={Position.Left} id="image-input" className="w-4 h-4 bg-purple-500 opacity-0 pointer-events-none" style={{ top: 44, left: -6 }} />
         </div>
       </div>
 
       {/* Generated Preview (Middle) */}
+      {!hasOutputConnection && (
       <div
-        className="relative bg-black flex items-center justify-center overflow-hidden border-b border-gray-800 group/preview"
-        style={{ aspectRatio: toCssAspectRatio(aspectRatio) }}
+        className="relative bg-black flex items-center justify-center overflow-hidden border-b border-gray-800 group/preview flex-1 min-h-0"
       >
         {generatedImage ? (
-            <img src={generatedImage} alt="Generated" className="w-full h-full object-contain" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <img src={generatedImage} alt="Generated" className="w-full h-full object-contain" />
+            </div>
         ) : (
             <div className="text-gray-600 flex flex-col items-center">
                 <Sparkles size={24} className="mb-2 opacity-20" />
@@ -593,6 +677,17 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
             </div>
         )}
       </div>
+      )}
+      
+      {/* Loading Overlay (When preview is hidden) */}
+      {hasOutputConnection && isGenerating && (
+          <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm rounded-lg">
+              <div className="flex flex-col items-center">
+                  <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                  <span className="text-xs text-blue-400 font-medium">生成中...</span>
+              </div>
+          </div>
+      )}
 
       {/* Prompt + Toolbar (Bottom) */}
       <div className="p-3 bg-gray-900 rounded-b-lg">
@@ -605,7 +700,8 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
           ) : (
             <div
               ref={promptEditorRef}
-              className="nodrag w-full bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none min-h-16 leading-relaxed whitespace-pre-wrap"
+              className="nodrag w-full min-w-0 bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none min-h-16 leading-relaxed whitespace-pre-wrap break-words"
+              style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
               contentEditable
               suppressContentEditableWarning
               onFocus={() => {
@@ -800,8 +896,8 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
         </div>
 
         <Handle type="target" position={Position.Left} className="w-4 h-4 bg-blue-500 opacity-0 pointer-events-none" style={{ top: '50%', left: -6 }} />
-        <Handle type="target" position={Position.Left} id="prompt-area" className="bg-blue-500 opacity-0" style={{ width: 44, height: 44, borderRadius: 9999, top: '84%', left: -22 }} />
-        <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500" style={{ top: '86%', left: -6 }} />
+        <Handle type="target" position={Position.Left} id="prompt-area" className="bg-blue-500 opacity-0 z-40" style={{ width: 44, height: 44, borderRadius: 9999, top: '84%', left: -22 }} />
+        <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500 z-50" style={{ top: '86%', left: -6 }} />
         <Handle type="target" position={Position.Left} id="text-input" className="w-4 h-4 bg-blue-500 opacity-0 pointer-events-none" style={{ top: '86%', left: -6 }} />
       </div>
     </div>
