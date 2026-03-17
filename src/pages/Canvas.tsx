@@ -25,13 +25,15 @@ import TextNode from '../components/nodes/TextNode';
 import ImageNode from '../components/nodes/ImageNode';
 import ImageGenNode from '../components/nodes/ImageGenNode';
 import VideoGenNode from '../components/nodes/VideoGenNode';
+import VideoPreviewNode from '../components/nodes/VideoPreviewNode';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
   text: TextNode,
   image: ImageNode,
   'image-gen': ImageGenNode,
-  video: VideoGenNode
+  video: VideoGenNode,
+  'video-preview': VideoPreviewNode
 };
 
 const INITIAL_NODES: Node[] = [];
@@ -97,6 +99,7 @@ const NODE_TYPES_LIST = [
   { type: 'script', label: '剧本', icon: FileText },
   { type: 'storyboard', label: '分镜', icon: ImageIcon },
   { type: 'video', label: '视频生成', icon: Film },
+  { type: 'video-preview', label: '视频预览', icon: Play },
 ];
 
 function CanvasContent() {
@@ -219,8 +222,11 @@ function CanvasContent() {
             if (sourceType === 'image') targetHandle = 'images';
           }
           if (targetType === 'video') {
-            if (sourceType === 'text') targetHandle = 'prompt';
+            if (sourceType === 'text') targetHandle = 'prompt-area';
             if (sourceType === 'image') targetHandle = 'images';
+          }
+          if (targetType === 'video-preview') {
+            if (sourceType === 'video') targetHandle = null;
           }
 
           setEdges((eds) =>
@@ -406,8 +412,12 @@ function CanvasContent() {
           }
           if (type === 'video') {
             const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
-            if (sourceNode?.type === 'text') targetHandle = 'prompt';
+            if (sourceNode?.type === 'text') targetHandle = 'prompt-area';
             if (sourceNode?.type === 'image') targetHandle = 'images';
+          }
+          if (type === 'video-preview') {
+            const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+            if (sourceNode?.type === 'video') targetHandle = null;
           }
           
           // Handle connection from ImageGenNode to ImageNode (or other nodes)

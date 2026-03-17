@@ -37,7 +37,7 @@ const PROVIDERS: Record<string, { name: string; baseUrl: string; models: string[
     { name: 'Stable Diffusion', baseUrl: '', models: ['sd-xl'] },
   ],
   video: [
-    { name: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seedance-1-5-pro-251215'] },
+    { name: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-lite-i2v-250428'] },
     { name: 'Runway', baseUrl: '', models: ['gen-2'] },
     { name: 'Pika', baseUrl: '', models: ['pika-1.0'] },
   ],
