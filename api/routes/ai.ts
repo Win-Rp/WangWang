@@ -58,6 +58,9 @@ const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '');
 const maskApiKey = (apiKey: string) => (apiKey.length <= 8 ? '***' : `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}`);
 const isSeedream3T2IModel = (modelId: string) =>
   modelId.includes('seedream-3-0-t2i') || modelId.includes('seedream-3.0-t2i');
+const isGeminiModel = (modelId: string) =>
+  modelId.toLowerCase().includes('gemini');
+
 const resolveRequestedModelId = (modelId: string) => {
   if (modelId === 'doubao-seedream-3.0-t2i') return 'doubao-seedream-3-0-t2i-250415';
   return modelId;
@@ -69,9 +72,11 @@ const resolveSize = (quality: string | undefined, aspectRatio: string | undefine
     if (quality === '2K') return SIZE_2K_MAP[aspectRatio || ''] || '2048x2048';
     return SIZE_1K_MAP[aspectRatio || ''] || '1024x1024';
   }
+  
+  // 对于 Gemini 或其他非火山引擎模型，使用标准的 OpenAI 尺寸格式
   const q = quality === '3K' ? '3K' : '2K';
-  if (q === '3K') return SIZE_3K_MAP[aspectRatio || ''] || '3K';
-  return SIZE_2K_MAP[aspectRatio || ''] || '2K';
+  const sizeMap = q === '3K' ? SIZE_3K_MAP : SIZE_2K_MAP;
+  return sizeMap[aspectRatio || ''] || (q === '3K' ? '3072x3072' : '2048x2048');
 };
 
 const videoTaskConfigMap = new Map<string, { baseUrl: string; apiKey: string; provider: string }>();
@@ -128,7 +133,8 @@ const queryConfigsByCategory = async (category: string): Promise<ModelConfig[]> 
 const resolveConfigAndModel = async (category: string, modelId?: string) => {
   const configs = await queryConfigsByCategory(category);
   if (configs.length === 0) {
-    return { error: `未找到${category === 'video' ? '视频' : '图片'}模型配置，请先到设置页添加服务商。` };
+    const categoryName = category === 'video' ? '视频' : category === 'image' ? '图片' : '文本';
+    return { error: `未找到${categoryName}模型配置，请先到设置页添加服务商。` };
   }
 
   if (modelId) {
@@ -149,20 +155,146 @@ const resolveConfigAndModel = async (category: string, modelId?: string) => {
     }
   }
 
-  return { error: `当前${category === 'video' ? '视频' : '图片'}服务商未配置可用模型，请先在设置页添加模型。` };
+  const categoryName = category === 'video' ? '视频' : category === 'image' ? '图片' : '文本';
+  return { error: `当前${categoryName}服务商未配置可用模型，请先在设置页添加模型。` };
 };
 
-// Mock AI text generation
-router.post('/generate-text', (req: Request, res: Response) => {
+// AI text generation
+router.post('/generate-text', async (req: Request, res: Response) => {
   const { prompt, modelId, useNetworking } = req.body;
-  
-  // Simulate delay
-  setTimeout(() => {
-    res.json({ 
-      success: true, 
-      data: `[${modelId || 'Default Model'}] Generated content for: ${prompt} ${useNetworking ? '(Networked)' : ''}` 
+
+  if (!prompt || !String(prompt).trim()) {
+    return res.status(400).json({ success: false, error: '提示词不能为空。' });
+  }
+
+  try {
+    const resolved = await resolveConfigAndModel('text', modelId);
+    if ('error' in resolved) {
+      return res.status(400).json({ success: false, error: resolved.error });
+    }
+
+    const { config, modelId: resolvedModelId } = resolved;
+    if (!config.baseUrl || !config.apiKey) {
+      return res.status(400).json({ success: false, error: '服务商配置缺少 Base URL 或 API Key。' });
+    }
+
+    const payload = {
+      model: resolvedModelId,
+      messages: [{ role: 'user', content: String(prompt).trim() }],
+      stream: false,
+    };
+
+    const endpoint = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
+    console.log('[TextGen] 即将请求上游:', {
+      provider: config.provider,
+      endpoint,
+      modelId: resolvedModelId,
+      apiKeyMasked: maskApiKey(config.apiKey),
     });
-  }, 1000);
+
+    const upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      const upstreamMessage = result?.error?.message || result?.message || `上游请求失败(${upstream.status})`;
+      return res.status(upstream.status).json({ success: false, error: upstreamMessage });
+    }
+
+    const content = result?.choices?.[0]?.message?.content;
+    if (!content) {
+      return res.status(502).json({ success: false, error: '未从上游返回中解析到文本结果。' });
+    }
+
+    res.json({
+      success: true,
+      data: content,
+      usage: result?.usage,
+    });
+  } catch (error: any) {
+    console.error('[TextGen] 请求异常:', error);
+    res.status(500).json({ success: false, error: error?.message || '文本生成请求失败。' });
+  }
+});
+
+// Decompose script into storyboard shots
+router.post('/decompose-script', async (req: Request, res: Response) => {
+  const { script, modelId } = req.body;
+
+  if (!script || !String(script).trim()) {
+    return res.status(400).json({ success: false, error: '剧本内容不能为空。' });
+  }
+
+  try {
+    const resolved = await resolveConfigAndModel('text', modelId);
+    if ('error' in resolved) {
+      return res.status(400).json({ success: false, error: resolved.error });
+    }
+
+    const { config, modelId: resolvedModelId } = resolved;
+    
+    const systemPrompt = `你是一个专业的电影分镜师。你的任务是将用户提供的剧本拆解为一系列视觉镜头。
+每个镜头需要包含：
+1. 画面描述 (prompt): 简洁且具有视觉表现力的英文提示词，用于图片生成。
+2. 建议时长 (duration): 该镜头的持续秒数 (通常为 3-8 秒)。
+
+请严格按照 JSON 格式返回，格式如下：
+{
+  "shots": [
+    { "prompt": "Shot 1 visual description in English", "duration": 5 },
+    { "prompt": "Shot 2 visual description in English", "duration": 3 }
+  ]
+}
+只返回 JSON，不要有任何其他文字说明。`;
+
+    const payload = {
+      model: resolvedModelId,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `请拆解以下剧本：\n${script}` }
+      ],
+      response_format: { type: 'json_object' },
+      stream: false,
+    };
+
+    const endpoint = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
+    const upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ success: false, error: result?.error?.message || 'AI 拆解失败' });
+    }
+
+    let content = result?.choices?.[0]?.message?.content;
+    if (!content) {
+      return res.status(502).json({ success: false, error: '未从上游返回中解析到结果。' });
+    }
+
+    // Try to parse JSON if it's wrapped in code blocks
+    content = content.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(content);
+
+    res.json({
+      success: true,
+      shots: parsed.shots || []
+    });
+  } catch (error: any) {
+    console.error('[Decompose] 请求异常:', error);
+    res.status(500).json({ success: false, error: error?.message || '剧本拆解失败。' });
+  }
 });
 
 // AI image generation
@@ -212,7 +344,15 @@ router.post('/generate-image', async (req: Request, res: Response) => {
       size: resolveSize(quality, aspectRatio, finalModelId),
       response_format: 'url',
     };
-    if (!isSeedream3T2IModel(finalModelId)) {
+    
+    // 如果不是火山引擎模型，也不是 Gemini 模型（通常是 OpenAI 风格），
+    // 我们可以根据需要添加一些参数。火山引擎需要 output_format，
+    // 而 Gemini 的 OpenAI 兼容层通常对未知参数比较敏感，所以我们这里做下区分。
+    if (isSeedream3T2IModel(finalModelId)) {
+      // 保持现状
+    } else if (isGeminiModel(finalModelId)) {
+      // Gemini 暂时不需要额外的非标参数
+    } else {
       payload.output_format = 'png';
       payload.watermark = false;
     }

@@ -26,6 +26,7 @@ import ImageNode from '../components/nodes/ImageNode';
 import ImageGenNode from '../components/nodes/ImageGenNode';
 import VideoGenNode from '../components/nodes/VideoGenNode';
 import VideoPreviewNode from '../components/nodes/VideoPreviewNode';
+import StoryboardNode from '../components/nodes/StoryboardNode';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
@@ -33,7 +34,8 @@ const nodeTypes = {
   image: ImageNode,
   'image-gen': ImageGenNode,
   video: VideoGenNode,
-  'video-preview': VideoPreviewNode
+  'video-preview': VideoPreviewNode,
+  storyboard: StoryboardNode
 };
 
 const INITIAL_NODES: Node[] = [];
@@ -224,6 +226,7 @@ function CanvasContent() {
           if (targetType === 'video') {
             if (sourceType === 'text') targetHandle = 'prompt-area';
             if (sourceType === 'image') targetHandle = 'images';
+            if (sourceType === 'storyboard') targetHandle = 'prompt-area';
           }
           if (targetType === 'video-preview') {
             if (sourceType === 'video') targetHandle = null;

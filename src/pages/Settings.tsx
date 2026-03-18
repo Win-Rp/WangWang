@@ -30,9 +30,11 @@ const PROVIDERS: Record<string, { name: string; baseUrl: string; models: string[
     { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-3.5-turbo', 'gpt-4', 'gpt-4-turbo'] },
     { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', models: ['deepseek-chat', 'deepseek-reasoner'] },
     { name: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', models: ['moonshot-v1-8k', 'moonshot-v1-32k'] },
+    { name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', models: ['gemini-3.1-flash-lite-preview', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'] },
   ],
   image: [
     { name: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seedream-5-0-260128', 'doubao-seedream-3-0-t2i-250415'] },
+    { name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', models: ['Gemini 3 Pro Image', 'Gemini 3.1 Flash Image'] },
     { name: 'Midjourney', baseUrl: '', models: ['mj-v6'] },
     { name: 'Stable Diffusion', baseUrl: '', models: ['sd-xl'] },
   ],

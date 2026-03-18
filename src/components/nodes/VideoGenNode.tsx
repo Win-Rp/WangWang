@@ -114,6 +114,7 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
     const bySourceId = new Map(nodes.map((n) => [n.id, n] as const));
     const textNodes: any[] = [];
     const imageNodes: any[] = [];
+    const storyboardNodes: any[] = [];
 
     for (const e of incomingEdges) {
       const sourceNode = bySourceId.get(e.source);
@@ -123,28 +124,43 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
       const isImagesHandle = handle === 'images' || handle === 'image-input' || handle === null;
       if (isPromptHandle && sourceNode.type === 'text') textNodes.push(sourceNode);
       if (isImagesHandle && sourceNode.type === 'image') imageNodes.push(sourceNode);
+      if (sourceNode.type === 'storyboard') storyboardNodes.push(sourceNode);
     }
 
     imageNodes.sort((a, b) => a.position.y - b.position.y);
     return {
       upstreamTextNode: textNodes[0] || null,
       upstreamImageNodes: imageNodes,
+      upstreamStoryboardNode: storyboardNodes[0] || null,
       hasOutputConnection: edges.some(e => e.source === id && e.sourceHandle === 'output')
     };
   }, [edges, id, nodes]);
 
   const upstreamTextNode = incoming.upstreamTextNode;
   const upstreamImageNodes = incoming.upstreamImageNodes;
+  const upstreamStoryboardNode = incoming.upstreamStoryboardNode;
   const hasOutputConnection = incoming.hasOutputConnection;
 
   const referenceImages = useMemo(() => {
-    return upstreamImageNodes
-      .map((node: any) => ({
-        id: node?.id as string,
-        url: (node?.data?.imageUrl as string | undefined) || null
-      }))
-      .filter((n: any) => !!n.id);
-  }, [upstreamImageNodes]);
+    const images = upstreamImageNodes.map((node: any) => ({
+      id: node?.id as string,
+      url: (node?.data?.imageUrl as string | undefined) || null
+    }));
+
+    if (upstreamStoryboardNode) {
+      const storyboardShots = (upstreamStoryboardNode.data.shots || []) as any[];
+      storyboardShots.forEach((shot, idx) => {
+        if (shot.imageUrl) {
+          images.push({
+            id: `${upstreamStoryboardNode.id}-${shot.id}`,
+            url: shot.imageUrl
+          });
+        }
+      });
+    }
+
+    return images.filter((n: any) => !!n.id);
+  }, [upstreamImageNodes, upstreamStoryboardNode]);
 
   const mentionCandidates = useMemo(() => {
     return referenceImages.map((img, idx) => ({
@@ -170,10 +186,22 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
 
   useEffect(() => {
     const nextPrompt = nodeData.prompt || '';
-    if (!upstreamTextNode && nextPrompt !== prompt) setPrompt(nextPrompt);
+    if (!upstreamTextNode && !upstreamStoryboardNode && nextPrompt !== prompt) setPrompt(nextPrompt);
     
     const nextPromptRich = (nodeData.promptRich as PromptSegment[] | undefined) || null;
-    if (!upstreamTextNode) setPromptRich(nextPromptRich);
+    if (!upstreamTextNode && !upstreamStoryboardNode) setPromptRich(nextPromptRich);
+
+    // If storyboard is connected, prioritize its prompts if we want (or just use its first shot)
+    if (upstreamStoryboardNode && !upstreamTextNode) {
+        const shots = (upstreamStoryboardNode.data.shots || []) as any[];
+        if (shots.length > 0) {
+            const combinedPrompt = shots.map(s => s.prompt).join(', ');
+            if (combinedPrompt !== prompt) {
+                setPrompt(combinedPrompt);
+                updateNodeData({ prompt: combinedPrompt });
+            }
+        }
+    }
 
     const nextModel = nodeData.modelId || '';
     if (nextModel !== selectedModel) setSelectedModel(nextModel);
