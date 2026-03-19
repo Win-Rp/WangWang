@@ -20,6 +20,13 @@ type FallbackState = {
   }>
   api_configs: Array<any>
   models: Array<any>
+  agents: Array<{
+    id: string
+    name: string
+    system_prompt: string
+    created_at: string
+    updated_at: string
+  }>
 }
 
 const fallbackFilePath = path.resolve(process.cwd(), 'wangwang.fallback-db.json')
@@ -32,9 +39,10 @@ const readFallbackState = (): FallbackState => {
       projects: Array.isArray(parsed.projects) ? parsed.projects : [],
       api_configs: Array.isArray(parsed.api_configs) ? parsed.api_configs : [],
       models: Array.isArray(parsed.models) ? parsed.models : [],
+      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
     }
   } catch {
-    return { projects: [], api_configs: [], models: [] }
+    return { projects: [], api_configs: [], models: [], agents: [] }
   }
 }
 
@@ -88,6 +96,46 @@ const createFallbackDb = (): DbLike => {
           return
         }
 
+        if (/^\s*insert\s+into\s+agents\s*/i.test(sql)) {
+          const [id, name, system_prompt] = params
+          state.agents.unshift({
+            id,
+            name,
+            system_prompt,
+            created_at: now,
+            updated_at: now,
+          })
+          persist(state)
+          cb?.call({ lastID: id, changes: 1 }, null)
+          return
+        }
+
+        if (/^\s*update\s+agents\s+set\s+/i.test(sql)) {
+          const [name, system_prompt, id] = params
+          const idx = state.agents.findIndex((a) => a.id === id)
+          if (idx >= 0) {
+            state.agents[idx] = {
+              ...state.agents[idx],
+              name,
+              system_prompt,
+              updated_at: now,
+            }
+            persist(state)
+          }
+          cb?.call({ changes: idx >= 0 ? 1 : 0 }, null)
+          return
+        }
+
+        if (/^\s*delete\s+from\s+agents\s+where\s+id\s*=/i.test(sql)) {
+          const [id] = params
+          const initialLen = state.agents.length
+          state.agents = state.agents.filter((a) => a.id !== id)
+          const changed = initialLen !== state.agents.length
+          if (changed) persist(state)
+          cb?.call({ changes: changed ? 1 : 0 }, null)
+          return
+        }
+
         cb?.call({ changes: 0 }, null)
       } catch (e: any) {
         cb?.call({}, e)
@@ -100,6 +148,14 @@ const createFallbackDb = (): DbLike => {
         if (/select\s+\*\s+from\s+projects/i.test(sql)) {
           const rows = [...state.projects].sort((a, b) => {
             return (b.updated_at || '').localeCompare(a.updated_at || '')
+          })
+          cb.call({}, null, rows)
+          return
+        }
+
+        if (/select\s+\*\s+from\s+agents/i.test(sql)) {
+          const rows = [...state.agents].sort((a, b) => {
+            return (b.created_at || '').localeCompare(a.created_at || '')
           })
           cb.call({}, null, rows)
           return

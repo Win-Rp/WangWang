@@ -13,6 +13,7 @@ import authRoutes from './routes/auth.ts'
 import projectRoutes from './routes/projects.ts'
 import settingsRoutes from './routes/settings.ts'
 import aiRoutes from './routes/ai.ts'
+import agentRoutes from './routes/agents.ts'
 
 // load env
 dotenv.config()
@@ -23,6 +24,16 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+// Custom Request Logger for full URL and body
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+  console.log(`[Incoming] ${req.method} ${fullUrl}`, {
+    body: req.body,
+    query: req.query
+  });
+  next();
+});
+
 /**
  * API Routes
  */
@@ -30,6 +41,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/projects', projectRoutes)
 app.use('/api/settings', settingsRoutes)
 app.use('/api/ai', aiRoutes)
+app.use('/api/agents', agentRoutes)
 
 /**
  * health

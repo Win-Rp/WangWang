@@ -54,6 +54,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
     query: string;
     activeIndex: number;
   }>(null);
+  const isComposing = useRef(false);
   
   const edges = useEdges();
   const nodes = useNodes();
@@ -560,7 +561,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[320px] min-h-[200px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'}`}>
+    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[320px] min-h-[200px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${isGenerating ? 'animate-flowline' : ''}`}>
       
       {/* Header */}
       <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700 group/header">
@@ -718,8 +719,19 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
                 const plain = segmentsToPlainText(segments);
                 setPromptRich(segments);
                 setPrompt(plain);
-                updateNodeData({ prompt: plain, promptRich: segments });
+                if (!isComposing.current) {
+                  updateNodeData({ prompt: plain, promptRich: segments });
+                }
                 updateMentionStateFromEditor(segments);
+              }}
+              onCompositionStart={() => {
+                isComposing.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposing.current = false;
+                const segments = readSegmentsFromEditor();
+                const plain = segmentsToPlainText(segments);
+                updateNodeData({ prompt: plain, promptRich: segments });
               }}
               onKeyDown={(e) => {
                 if (!mentionState) {

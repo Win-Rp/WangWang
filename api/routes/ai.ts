@@ -54,7 +54,7 @@ const SIZE_3K_MAP: Record<string, string> = {
   '21:9': '4704x2016',
 };
 
-const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '');
+const normalizeBaseUrl = (baseUrl: string) => baseUrl.trim().replace(/[`'"]/g, '').replace(/\/+$/, '');
 const maskApiKey = (apiKey: string) => (apiKey.length <= 8 ? '***' : `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}`);
 const isSeedream3T2IModel = (modelId: string) =>
   modelId.includes('seedream-3-0-t2i') || modelId.includes('seedream-3.0-t2i');
@@ -161,7 +161,7 @@ const resolveConfigAndModel = async (category: string, modelId?: string) => {
 
 // AI text generation
 router.post('/generate-text', async (req: Request, res: Response) => {
-  const { prompt, modelId, useNetworking } = req.body;
+  const { prompt, modelId, useNetworking, systemPrompt, inputImages } = req.body;
 
   if (!prompt || !String(prompt).trim()) {
     return res.status(400).json({ success: false, error: '提示词不能为空。' });
@@ -178,16 +178,41 @@ router.post('/generate-text', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: '服务商配置缺少 Base URL 或 API Key。' });
     }
 
+    const messages: any[] = [];
+    
+    // 1. Add System Prompt
+    if (systemPrompt && String(systemPrompt).trim()) {
+      messages.push({ role: 'system', content: String(systemPrompt).trim() });
+    }
+
+    // 2. Construct User Message (Multimodal if images exist)
+    if (Array.isArray(inputImages) && inputImages.length > 0) {
+      const content: any[] = [{ type: 'text', text: String(prompt).trim() }];
+      
+      inputImages.forEach((imgUrl: string) => {
+        if (imgUrl && typeof imgUrl === 'string') {
+          content.push({
+            type: 'image_url',
+            image_url: { url: imgUrl }
+          });
+        }
+      });
+
+      messages.push({ role: 'user', content });
+    } else {
+      messages.push({ role: 'user', content: String(prompt).trim() });
+    }
+
     const payload = {
       model: resolvedModelId,
-      messages: [{ role: 'user', content: String(prompt).trim() }],
+      messages,
       stream: false,
     };
 
     const endpoint = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
     console.log('[TextGen] 即将请求上游:', {
       provider: config.provider,
-      endpoint,
+      url: endpoint,
       modelId: resolvedModelId,
       apiKeyMasked: maskApiKey(config.apiKey),
     });
@@ -202,14 +227,32 @@ router.post('/generate-text', async (req: Request, res: Response) => {
     });
 
     const result = await upstream.json().catch(() => ({}));
+    console.log('[TextGen] 上游响应详情:', JSON.stringify(result, null, 2));
+    
+    console.log('[TextGen] 上游响应概览:', {
+      status: upstream.status,
+      ok: upstream.ok,
+      hasContent: !!result?.choices?.[0]?.message?.content,
+      error: result?.error || result?.message || null,
+    });
+
     if (!upstream.ok) {
-      const upstreamMessage = result?.error?.message || result?.message || `上游请求失败(${upstream.status})`;
+      let upstreamMessage = result?.error?.message || result?.message || `上游请求失败(${upstream.status})`;
+      
+      // 特殊处理：如果报错提到 image_url 和 text，说明该模型不支持多模态输入
+      if (upstreamMessage.includes('image_url') && upstreamMessage.includes('text')) {
+        upstreamMessage = `生成失败：当前模型 (${resolvedModelId}) 可能不支持参考图片功能。请断开参考图片连接，或更换支持 Vision 的模型（如 gpt-4o, gemini-1.5 等）。\n\n原始错误：${upstreamMessage}`;
+      }
+
+      console.error('[TextGen] 上游返回错误:', result);
       return res.status(upstream.status).json({ success: false, error: upstreamMessage });
     }
 
     const content = result?.choices?.[0]?.message?.content;
     if (!content) {
-      return res.status(502).json({ success: false, error: '未从上游返回中解析到文本结果。' });
+      // 如果没有 content 但是有 error 对象，尝试提取
+      const errorMessage = result?.error?.message || result?.message || '未从上游返回中解析到文本结果。';
+      return res.status(502).json({ success: false, error: errorMessage, raw: result });
     }
 
     res.json({
@@ -264,6 +307,13 @@ router.post('/decompose-script', async (req: Request, res: Response) => {
     };
 
     const endpoint = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
+    console.log('[Decompose] 即将请求上游:', {
+      provider: config.provider,
+      url: endpoint,
+      modelId: resolvedModelId,
+      apiKeyMasked: maskApiKey(config.apiKey),
+    });
+
     const upstream = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -274,6 +324,13 @@ router.post('/decompose-script', async (req: Request, res: Response) => {
     });
 
     const result = await upstream.json().catch(() => ({}));
+    console.log('[Decompose] 上游响应:', {
+      status: upstream.status,
+      ok: upstream.ok,
+      hasChoices: Array.isArray(result?.choices),
+      error: result?.error || result?.message || null,
+    });
+
     if (!upstream.ok) {
       return res.status(upstream.status).json({ success: false, error: result?.error?.message || 'AI 拆解失败' });
     }
@@ -373,7 +430,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
     const endpoint = `${normalizeBaseUrl(config.baseUrl)}/images/generations`;
     console.log('[ImageGen] 即将请求上游:', {
       provider: config.provider,
-      endpoint,
+      url: endpoint,
       resolvedModelId: finalModelId,
       requestPayload: payload,
       apiKeyMasked: maskApiKey(config.apiKey),
@@ -487,7 +544,7 @@ router.post('/generate-video', async (req: Request, res: Response) => {
     const endpoint = `${normalizeBaseUrl(config.baseUrl)}/contents/generations/tasks`;
     console.log('[VideoGen] 创建任务请求:', {
       provider: config.provider,
-      endpoint,
+      url: endpoint,
       modelId: resolvedModelId,
       mode,
       imagesCount: images.length,
@@ -546,6 +603,13 @@ router.get('/generate-video/task/:taskId', async (req: Request, res: Response) =
     }
 
     const endpoint = `${normalizeBaseUrl(config.baseUrl)}/contents/generations/tasks/${taskId}`;
+    console.log('[VideoTask] 查询任务状态:', {
+      taskId,
+      provider: config.provider,
+      url: endpoint,
+      apiKeyMasked: maskApiKey(config.apiKey),
+    });
+
     const upstream = await fetch(endpoint, {
       method: 'GET',
       headers: {
@@ -555,6 +619,13 @@ router.get('/generate-video/task/:taskId', async (req: Request, res: Response) =
     });
 
     const result = await upstream.json().catch(() => ({}));
+    console.log('[VideoTask] 上游响应:', {
+      status: upstream.status,
+      ok: upstream.ok,
+      taskStatus: result?.status,
+      error: result?.error || result?.message || null,
+    });
+
     if (!upstream.ok) {
       const upstreamMessage = result?.error?.message || result?.message || `上游请求失败(${upstream.status})`;
       return res.status(upstream.status).json({ success: false, error: upstreamMessage });

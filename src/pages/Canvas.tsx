@@ -18,7 +18,10 @@ import {
   FinalConnectionState
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Settings, FileText, Film, Image as ImageIcon, Play, Sparkles } from 'lucide-react';
+import { 
+  Settings, FileText, Film, Image as ImageIcon, Play, Sparkles, 
+  Plus, LayoutGrid
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import TextNode from '../components/nodes/TextNode';
@@ -27,6 +30,7 @@ import ImageGenNode from '../components/nodes/ImageGenNode';
 import VideoGenNode from '../components/nodes/VideoGenNode';
 import VideoPreviewNode from '../components/nodes/VideoPreviewNode';
 import StoryboardNode from '../components/nodes/StoryboardNode';
+import AssetManager from '../components/AssetManager';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
@@ -112,6 +116,7 @@ function CanvasContent() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, toObject, setViewport } = useReactFlow();
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [isAssetManagerOpen, setIsAssetManagerOpen] = useState(false);
 
   const saveProject = useCallback(async () => {
     if (!projectId) return;
@@ -221,6 +226,9 @@ function CanvasContent() {
           let targetHandle: string | null = null;
           if (targetType === 'image-gen') {
             if (sourceType === 'text') targetHandle = 'prompt-area';
+            if (sourceType === 'image') targetHandle = 'images';
+          }
+          if (targetType === 'text') {
             if (sourceType === 'image') targetHandle = 'images';
           }
           if (targetType === 'video') {
@@ -413,6 +421,10 @@ function CanvasContent() {
             if (sourceNode?.type === 'text') targetHandle = 'prompt';
             if (sourceNode?.type === 'image') targetHandle = 'images';
           }
+          if (type === 'text') {
+            const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+            if (sourceNode?.type === 'image') targetHandle = 'images';
+          }
           if (type === 'video') {
             const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
             if (sourceNode?.type === 'text') targetHandle = 'prompt-area';
@@ -509,6 +521,26 @@ function CanvasContent() {
           />
           <ZoomDisplay />
         </ReactFlow>
+
+        {/* Vertical Side Toolbar */}
+        <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col bg-[#1e1e1e] border border-gray-800 rounded-2xl shadow-2xl p-2 space-y-2 z-40">
+          <button className="w-10 h-10 bg-white text-black rounded-xl flex items-center justify-center hover:bg-gray-200 transition-colors shadow-lg">
+            <Plus size={20} />
+          </button>
+          <div className="w-8 h-[1px] bg-gray-800 mx-auto" />
+          <button 
+            onClick={() => setIsAssetManagerOpen(!isAssetManagerOpen)}
+            className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${isAssetManagerOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+            title="资产管理"
+          >
+            <LayoutGrid size={20} />
+          </button>
+        </div>
+
+        {/* Asset Manager Panel */}
+        {isAssetManagerOpen && (
+          <AssetManager onClose={() => setIsAssetManagerOpen(false)} />
+        )}
 
         {/* Context Menu for Adding Nodes */}
         {menu && (

@@ -34,6 +34,7 @@ export const initDb = () => {
       base_url TEXT NOT NULL,
       api_key TEXT NOT NULL,
       is_active BOOLEAN DEFAULT 1,
+      is_verified BOOLEAN DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE TABLE IF NOT EXISTS models (
@@ -43,6 +44,13 @@ export const initDb = () => {
       name TEXT NOT NULL,
       is_default BOOLEAN DEFAULT 0,
       FOREIGN KEY (api_config_id) REFERENCES api_configs(id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      system_prompt TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`
   ];
 
@@ -53,6 +61,19 @@ export const initDb = () => {
           console.error('Error creating table:', err.message);
         }
       });
+    });
+
+    // Simple migration: Add is_verified column if it doesn't exist
+    db.run(`ALTER TABLE api_configs ADD COLUMN is_verified BOOLEAN DEFAULT 0`, (err) => {
+      if (err) {
+        if (err.message.includes('duplicate column name')) {
+          // Column already exists, ignore
+        } else {
+          console.error('Migration error:', err.message);
+        }
+      } else {
+        console.log('Migration: is_verified column added to api_configs.');
+      }
     });
   });
   

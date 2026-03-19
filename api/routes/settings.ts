@@ -49,8 +49,8 @@ router.post('/apis', (req: Request, res: Response) => {
   const configId = uuidv4();
   
   const insertConfigSql = `
-    INSERT INTO api_configs (id, category, provider, base_url, api_key)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO api_configs (id, category, provider, base_url, api_key, is_verified)
+    VALUES (?, ?, ?, ?, ?, 0)
   `;
   
   db.run(insertConfigSql, [configId, category, provider, base_url, api_key], function(err) {
@@ -143,7 +143,29 @@ router.post('/apis/:id/test', async (req: Request, res: Response) => {
     });
 
     const result = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
+    const isSuccess = upstream.ok;
+
+    // Update is_verified status in database for THIS config and any other configs with same provider/url/key
+    const updateSql = isSuccess 
+      ? `UPDATE api_configs 
+         SET is_verified = 1 
+         WHERE id = ? 
+         OR (provider = ? AND base_url = ? AND api_key = ?)`
+      : `UPDATE api_configs SET is_verified = 0 WHERE id = ?`;
+    
+    const updateParams = isSuccess 
+      ? [id, config.provider, config.base_url, config.api_key]
+      : [id];
+
+    db.run(updateSql, updateParams, (err) => {
+      if (err) {
+        console.error('[API Test] 更新验证状态失败:', err.message);
+      } else if (isSuccess) {
+        console.log(`[API Test] 已同步更新相同配置的厂商验证状态`);
+      }
+    });
+
+    if (!isSuccess) {
       const message = result?.error?.message || result?.message || `测试失败(${upstream.status})`;
       console.warn('[API Test] 测试失败:', { id: config.id, status: upstream.status, message });
       return res.status(upstream.status).json({ success: false, message });
@@ -170,23 +192,77 @@ router.post('/apis/:id/test', async (req: Request, res: Response) => {
   }
 });
 
+// Fetch model list from upstream provider
+router.get('/apis/:id/models/fetch', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const sql = 'SELECT base_url, api_key FROM api_configs WHERE id = ?';
+
+  try {
+    const config = await new Promise<any>((resolve, reject) => {
+      db.get(sql, [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    if (!config) return res.status(404).json({ error: 'Config not found' });
+    if (!config.base_url || !config.api_key) return res.status(400).json({ error: 'Configuration incomplete' });
+
+    const fetchUrl = `${normalizeBaseUrl(config.base_url)}/models`;
+    console.log(`[API Fetch Models] Requesting models from: ${fetchUrl}`);
+    
+    const response = await fetch(fetchUrl, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${config.api_key}` },
+    });
+
+    console.log(`[API Fetch Models] Upstream responded with status: ${response.status}`);
+    const data = await response.json().catch(() => ({}));
+    
+    if (!response.ok) {
+      console.error(`[API Fetch Models] Fetch failed:`, data);
+      return res.status(response.status).json({ 
+        error: data?.error?.message || data?.message || `Upstream error (${response.status})` 
+      });
+    }
+
+    // OpenAI compatible format returns data as array of model objects
+    const models = Array.isArray(data?.data) ? data.data.map((m: any) => m.id) : [];
+    console.log(`[API Fetch Models] Successfully fetched ${models.length} models`);
+    res.json({ models });
+  } catch (error: any) {
+    console.error('[API Fetch Models] Error:', error);
+    res.status(500).json({ error: error?.message || 'Failed to fetch models from provider' });
+  }
+});
+
 // Update API config
 router.put('/apis/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   const { category, provider, base_url, api_key, models } = req.body;
   
-  const updateConfigSql = `
-    UPDATE api_configs 
-    SET category = ?, provider = ?, base_url = ?, api_key = ?
-    WHERE id = ?
-  `;
-  
-  db.run(updateConfigSql, [category, provider, base_url, api_key, id], function(err) {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
+  // First, get the current config to see if URL or Key changed
+  db.get('SELECT base_url, api_key, is_verified FROM api_configs WHERE id = ?', [id], (err, currentConfig: any) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!currentConfig) return res.status(404).json({ error: 'Config not found' });
+
+    // Only reset is_verified if URL or Key changed
+    const urlChanged = currentConfig.base_url !== base_url;
+    const keyChanged = currentConfig.api_key !== api_key;
+    const isVerified = (urlChanged || keyChanged) ? 0 : currentConfig.is_verified;
+
+    const updateConfigSql = `
+      UPDATE api_configs 
+      SET category = ?, provider = ?, base_url = ?, api_key = ?, is_verified = ?
+      WHERE id = ?
+    `;
     
-    if (models && Array.isArray(models)) {
+    db.run(updateConfigSql, [category, provider, base_url, api_key, isVerified, id], function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      
+      if (models && Array.isArray(models)) {
       db.run('DELETE FROM models WHERE api_config_id = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         
@@ -220,6 +296,7 @@ router.put('/apis/:id', (req: Request, res: Response) => {
     } else {
       res.status(200).json({ message: 'API config updated successfully' });
     }
+    });
   });
 });
 
