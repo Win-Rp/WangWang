@@ -37,7 +37,7 @@ const PROVIDERS: Record<string, { name: string; models: string[] }[]> = {
     { name: 'NewAPI', models: [] }
   ],
   image: [
-    { name: 'Google', models: ['Gemini 3 Pro Image', 'Gemini 3.1 Flash Image'] },
+    { name: 'Google', models: ['gemini-3.1-flash-image-preview'] },
     { name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { name: 'xAI', models: [] },
     { name: 'DeepSeek', models: [] },

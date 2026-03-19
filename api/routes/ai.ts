@@ -61,6 +61,81 @@ const isSeedream3T2IModel = (modelId: string) =>
 const isGeminiModel = (modelId: string) =>
   modelId.toLowerCase().includes('gemini');
 
+const normalizeGeminiNativeBaseUrl = (baseUrl: string) => {
+  const normalized = normalizeBaseUrl(baseUrl);
+  const withoutOpenAI = normalized.replace(/\/openai$/i, '');
+  if (/\/v1$/i.test(withoutOpenAI)) {
+    return withoutOpenAI.replace(/\/v1$/i, '/v1beta');
+  }
+  return withoutOpenAI;
+};
+
+const resolveGeminiImageSize = (quality: string | undefined) => {
+  if (quality === '3K') return '4K';
+  if (quality === '2K') return '2K';
+  return '1K';
+};
+
+const inferMimeTypeFromUrl = (url: string) => {
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  return 'application/octet-stream';
+};
+
+const toBase64 = (buffer: ArrayBuffer) => Buffer.from(buffer).toString('base64');
+
+const parseDataUrl = (value: string): { mimeType: string; data: string } | null => {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(value.trim());
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
+};
+
+const imageUrlToInlineDataPart = async (value: string) => {
+  const dataUrl = parseDataUrl(value);
+  if (dataUrl) {
+    return {
+      inline_data: {
+        mime_type: dataUrl.mimeType,
+        data: dataUrl.data,
+      },
+    };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+
+  const resp = await fetch(url.toString());
+  if (!resp.ok) {
+    throw new Error(`参考图拉取失败(${resp.status})`);
+  }
+
+  const contentLength = Number(resp.headers.get('content-length') || '0');
+  if (contentLength > 10 * 1024 * 1024) {
+    throw new Error('参考图过大(>10MB)');
+  }
+
+  const buffer = await resp.arrayBuffer();
+  if (buffer.byteLength > 10 * 1024 * 1024) {
+    throw new Error('参考图过大(>10MB)');
+  }
+
+  const mimeType = resp.headers.get('content-type') || inferMimeTypeFromUrl(url.toString());
+  return {
+    inline_data: {
+      mime_type: mimeType,
+      data: toBase64(buffer),
+    },
+  };
+};
+
 const resolveRequestedModelId = (modelId: string) => {
   if (modelId === 'doubao-seedream-3.0-t2i') return 'doubao-seedream-3-0-t2i-250415';
   return modelId;
@@ -393,6 +468,81 @@ router.post('/generate-image', async (req: Request, res: Response) => {
         hasApiKey: !!config.apiKey,
       });
       return res.status(400).json({ success: false, error: '服务商配置缺少 Base URL 或 API Key。' });
+    }
+
+    if (isGeminiModel(finalModelId)) {
+      const images = Array.isArray(inputImages)
+        ? inputImages.filter((item) => typeof item === 'string' && item.trim().length > 0)
+        : [];
+
+      const parts: Array<Record<string, unknown>> = [{ text: String(prompt).trim() }];
+      for (const img of images) {
+        const part = await imageUrlToInlineDataPart(img);
+        if (part) parts.push(part);
+      }
+
+      const endpoint = `${normalizeGeminiNativeBaseUrl(config.baseUrl)}/models/${finalModelId}:generateContent`;
+      const payload: Record<string, unknown> = {
+        contents: [
+          {
+            parts,
+          },
+        ],
+        generationConfig: {
+          responseModalities: ['IMAGE'],
+          imageConfig: {
+            aspectRatio: aspectRatio || '1:1',
+            imageSize: resolveGeminiImageSize(quality),
+          },
+        },
+      };
+
+      console.log('[ImageGen] 即将请求上游(Gemini Native):', {
+        provider: config.provider,
+        url: endpoint,
+        resolvedModelId: finalModelId,
+        apiKeyMasked: maskApiKey(config.apiKey),
+      });
+
+      const upstream = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': config.apiKey,
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await upstream.json().catch(() => ({}));
+      console.log('[ImageGen] 上游响应(Gemini Native):', {
+        status: upstream.status,
+        ok: upstream.ok,
+        error: result?.error || result?.message || null,
+      });
+
+      if (!upstream.ok) {
+        const upstreamMessage = result?.error?.message || result?.message || `上游请求失败(${upstream.status})`;
+        return res.status(upstream.status).json({ success: false, error: upstreamMessage });
+      }
+
+      const candidate = Array.isArray(result?.candidates) ? result.candidates[0] : null;
+      const content = candidate?.content || null;
+      const respParts = Array.isArray(content?.parts) ? content.parts : [];
+      const imagePart = respParts.find((p: any) => p?.inline_data || p?.inlineData) || null;
+      const inlineData = (imagePart?.inline_data || imagePart?.inlineData) as any;
+      const data = inlineData?.data ? String(inlineData.data) : '';
+      const mimeType = inlineData?.mime_type || inlineData?.mimeType || 'image/png';
+
+      if (!data) {
+        return res.status(502).json({ success: false, error: '未从上游返回中解析到图片结果。' });
+      }
+
+      return res.json({
+        success: true,
+        imageUrl: `data:${mimeType};base64,${data}`,
+        usage: result?.usageMetadata || result?.usage || undefined,
+      });
     }
 
     const payload: Record<string, unknown> = {

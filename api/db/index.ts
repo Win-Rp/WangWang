@@ -3,11 +3,13 @@ import path from 'path'
 import { createRequire } from 'module'
 
 type DbCallback = (this: any, err: Error | null, rows?: any[]) => void
+type DbGetCallback = (this: any, err: Error | null, row?: any) => void
 
 type DbLike = {
   serialize: (fn: () => void) => void
   run: (sql: string, params?: any[] | DbCallback, cb?: DbCallback) => void
   all: (sql: string, params: any[], cb: DbCallback) => void
+  get: (sql: string, params: any[], cb: DbGetCallback) => void
 }
 
 type FallbackState = {
@@ -27,6 +29,13 @@ type FallbackState = {
     created_at: string
     updated_at: string
   }>
+  skills: Array<{
+    id: string
+    name: string
+    content: string
+    created_at: string
+    updated_at: string
+  }>
 }
 
 const fallbackFilePath = path.resolve(process.cwd(), 'wangwang.fallback-db.json')
@@ -40,9 +49,10 @@ const readFallbackState = (): FallbackState => {
       api_configs: Array.isArray(parsed.api_configs) ? parsed.api_configs : [],
       models: Array.isArray(parsed.models) ? parsed.models : [],
       agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
     }
   } catch {
-    return { projects: [], api_configs: [], models: [], agents: [] }
+    return { projects: [], api_configs: [], models: [], agents: [], skills: [] }
   }
 }
 
@@ -136,6 +146,46 @@ const createFallbackDb = (): DbLike => {
           return
         }
 
+        if (/^\s*insert\s+into\s+skills\s*/i.test(sql)) {
+          const [id, name, content] = params
+          state.skills.unshift({
+            id,
+            name,
+            content,
+            created_at: now,
+            updated_at: now,
+          })
+          persist(state)
+          cb?.call({ lastID: id, changes: 1 }, null)
+          return
+        }
+
+        if (/^\s*update\s+skills\s+set\s+/i.test(sql)) {
+          const [name, content, id] = params
+          const idx = state.skills.findIndex((s) => s.id === id)
+          if (idx >= 0) {
+            state.skills[idx] = {
+              ...state.skills[idx],
+              name,
+              content,
+              updated_at: now,
+            }
+            persist(state)
+          }
+          cb?.call({ changes: idx >= 0 ? 1 : 0 }, null)
+          return
+        }
+
+        if (/^\s*delete\s+from\s+skills\s+where\s+id\s*=/i.test(sql)) {
+          const [id] = params
+          const initialLen = state.skills.length
+          state.skills = state.skills.filter((s) => s.id !== id)
+          const changed = initialLen !== state.skills.length
+          if (changed) persist(state)
+          cb?.call({ changes: changed ? 1 : 0 }, null)
+          return
+        }
+
         cb?.call({ changes: 0 }, null)
       } catch (e: any) {
         cb?.call({}, e)
@@ -161,10 +211,27 @@ const createFallbackDb = (): DbLike => {
           return
         }
 
+        if (/select\s+\*\s+from\s+skills/i.test(sql)) {
+          const rows = [...state.skills].sort((a, b) => {
+            return (b.created_at || '').localeCompare(a.created_at || '')
+          })
+          cb.call({}, null, rows)
+          return
+        }
+
         cb.call({}, null, [])
       } catch (e: any) {
         cb.call({}, e, [])
       }
+    },
+    get(sql, params, cb) {
+      this.all(sql, params, (err, rows) => {
+        if (err) {
+          cb.call({}, err, undefined)
+          return
+        }
+        cb.call({}, null, Array.isArray(rows) ? rows[0] : undefined)
+      })
     },
   }
 }

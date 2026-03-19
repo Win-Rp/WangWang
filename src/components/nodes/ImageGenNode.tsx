@@ -174,9 +174,11 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
         const availableModels: { id: string; name: string; isDefault?: boolean }[] = [];
         configsToUse.forEach((config: any) => {
           (config.models || []).forEach((m: any) => {
+            const modelId = typeof m.model_id === 'string' ? m.model_id.trim() : '';
+            if (!modelId || /\s/.test(modelId)) return;
             availableModels.push({
-              id: m.model_id,
-              name: m.name || m.model_id,
+              id: modelId,
+              name: m.name || modelId,
               isDefault: !!m.is_default,
             });
           });

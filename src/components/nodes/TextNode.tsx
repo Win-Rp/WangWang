@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Handle, Position, NodeProps, useReactFlow, NodeResizer, useEdges, useNodes } from '@xyflow/react';
-import { Sparkles, Check, Globe, Trash2, User, Image as ImageIcon } from 'lucide-react';
+import { Sparkles, Check, Globe, Trash2, User, Star, Image as ImageIcon } from 'lucide-react';
 
 interface TextNodeData {
   label: string;
@@ -8,6 +8,7 @@ interface TextNodeData {
   prompt?: string;
   modelId?: string;
   agentId?: string;
+  skillId?: string;
   onContentChange?: (content: string) => void;
 }
 
@@ -19,14 +20,18 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [models, setModels] = useState<{id: string, name: string}[]>([]);
   const [agents, setAgents] = useState<{id: string, name: string, system_prompt: string}[]>([]);
+  const [skills, setSkills] = useState<{id: string, name: string, content: string}[]>([]);
   const [selectedModel, setSelectedModel] = useState(nodeData.modelId || '');
   const [selectedAgentId, setSelectedAgentId] = useState(nodeData.agentId || '');
+  const [selectedSkillId, setSelectedSkillId] = useState(nodeData.skillId || '');
   const [isNetworking, setIsNetworking] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
+  const [isSkillMenuOpen, setIsSkillMenuOpen] = useState(false);
   const isComposing = useRef(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const agentMenuRef = useRef<HTMLDivElement>(null);
+  const skillMenuRef = useRef<HTMLDivElement>(null);
   const contentTextareaRef = useRef<HTMLTextAreaElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,6 +85,9 @@ export default function TextNode({ data, id, selected }: NodeProps) {
       if (agentMenuRef.current && !agentMenuRef.current.contains(event.target as Node)) {
         setIsAgentMenuOpen(false);
       }
+      if (skillMenuRef.current && !skillMenuRef.current.contains(event.target as Node)) {
+        setIsSkillMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -87,11 +95,13 @@ export default function TextNode({ data, id, selected }: NodeProps) {
 
   // Update local state when data changes from outside
   useEffect(() => {
+    if (isComposing.current) return;
     if (nodeData.content !== undefined && nodeData.content !== content) setContent(nodeData.content);
     if (nodeData.prompt !== undefined && nodeData.prompt !== prompt) setPrompt(nodeData.prompt);
     if (nodeData.modelId !== undefined && nodeData.modelId !== selectedModel) setSelectedModel(nodeData.modelId);
     if (nodeData.agentId !== undefined && nodeData.agentId !== selectedAgentId) setSelectedAgentId(nodeData.agentId);
-  }, [nodeData.content, nodeData.prompt, nodeData.modelId, nodeData.agentId, content, prompt, selectedModel, selectedAgentId]);
+    if (nodeData.skillId !== undefined && nodeData.skillId !== selectedSkillId) setSelectedSkillId(nodeData.skillId);
+  }, [nodeData.content, nodeData.prompt, nodeData.modelId, nodeData.agentId, nodeData.skillId, content, prompt, selectedModel, selectedAgentId, selectedSkillId]);
 
   // Fetch available text models and agents
   useEffect(() => {
@@ -123,6 +133,13 @@ export default function TextNode({ data, id, selected }: NodeProps) {
         const agentJson = await agentRes.json();
         if (agentJson.success) {
           setAgents(agentJson.data);
+        }
+
+        // Fetch Skills
+        const skillRes = await fetch('/api/skills');
+        const skillJson = await skillRes.json();
+        if (skillJson.success) {
+          setSkills(skillJson.data);
         }
       } catch (err) {
         console.error('Error fetching data:', err);
@@ -156,6 +173,13 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   useEffect(() => {
     autoResizeTextarea(promptTextareaRef.current);
   }, [prompt, selected]);
+
+  useEffect(() => {
+    if (selectedAgentId && selectedSkillId) {
+      setSelectedSkillId('');
+      updateNodeData({ skillId: '' });
+    }
+  }, [selectedAgentId, selectedSkillId]);
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
@@ -200,13 +224,30 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   const handleAgentSelect = (agentId: string) => {
       setSelectedAgentId(agentId);
       setIsAgentMenuOpen(false);
+      if (agentId) {
+        setSelectedSkillId('');
+        updateNodeData({ agentId, skillId: '' });
+        return;
+      }
       updateNodeData({ agentId });
+  };
+
+  const handleSkillSelect = (skillId: string) => {
+      setSelectedSkillId(skillId);
+      setIsSkillMenuOpen(false);
+      if (skillId) {
+        setSelectedAgentId('');
+        updateNodeData({ skillId, agentId: '' });
+        return;
+      }
+      updateNodeData({ skillId });
   };
 
   const handleGenerate = async () => {
     if (!prompt || !selectedModel) return;
     
     const selectedAgent = agents.find(a => a.id === selectedAgentId);
+    const selectedSkill = skills.find(s => s.id === selectedSkillId);
     
     setIsGenerating(true);
     try {
@@ -217,7 +258,7 @@ export default function TextNode({ data, id, selected }: NodeProps) {
           prompt,
           modelId: selectedModel,
           useNetworking: isNetworking,
-          systemPrompt: selectedAgent?.system_prompt,
+          systemPrompt: selectedSkill?.content ?? selectedAgent?.system_prompt,
           inputImages: referenceImages.map(img => img.url).filter(Boolean)
         })
       });
@@ -241,6 +282,7 @@ export default function TextNode({ data, id, selected }: NodeProps) {
 
   const currentModelName = models.find(m => m.id === selectedModel)?.name || '选择模型';
   const currentAgentName = agents.find(a => a.id === selectedAgentId)?.name || '选择智能体';
+  const currentSkillName = skills.find(s => s.id === selectedSkillId)?.name || '选择技能';
 
   return (
     <div className={`bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[200px] min-h-[150px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${isGenerating ? 'animate-flowline' : ''}`}>
@@ -403,6 +445,43 @@ export default function TextNode({ data, id, selected }: NodeProps) {
                       ))}
                       {agents.length === 0 && (
                         <div className="px-3 py-2 text-xs text-gray-500">暂无智能体</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Skill Selector */}
+                <div className="relative" ref={skillMenuRef}>
+                  <button
+                    onClick={() => setIsSkillMenuOpen(!isSkillMenuOpen)}
+                    className={`flex items-center gap-1.5 text-xs font-medium transition-colors group ${selectedSkillId ? 'text-yellow-400' : 'text-gray-400 hover:text-gray-200'}`}
+                  >
+                    <Star size={12} className={selectedSkillId ? 'text-yellow-400' : 'text-gray-500 group-hover:text-gray-300'} />
+                    <span>{currentSkillName}</span>
+                  </button>
+
+                  {isSkillMenuOpen && (
+                    <div className="absolute bottom-full left-0 mb-2 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto custom-scrollbar">
+                      <button
+                        onClick={() => handleSkillSelect('')}
+                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-700 transition-colors ${!selectedSkillId ? 'bg-gray-700/50 text-blue-400' : 'text-gray-300'}`}
+                      >
+                        <span>无技能</span>
+                        {!selectedSkillId && <Check size={12} />}
+                      </button>
+                      <div className="h-[1px] bg-gray-700 my-1" />
+                      {skills.map(s => (
+                        <button
+                          key={s.id}
+                          onClick={() => handleSkillSelect(s.id)}
+                          className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-700 transition-colors ${selectedSkillId === s.id ? 'bg-gray-700/50 text-yellow-400' : 'text-gray-300'}`}
+                        >
+                          <span className="truncate">{s.name}</span>
+                          {selectedSkillId === s.id && <Check size={12} />}
+                        </button>
+                      ))}
+                      {skills.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-gray-500">暂无技能</div>
                       )}
                     </div>
                   )}

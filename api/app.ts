@@ -14,6 +14,7 @@ import projectRoutes from './routes/projects.ts'
 import settingsRoutes from './routes/settings.ts'
 import aiRoutes from './routes/ai.ts'
 import agentRoutes from './routes/agents.ts'
+import skillRoutes from './routes/skills.ts'
 
 // load env
 dotenv.config()
@@ -42,6 +43,7 @@ app.use('/api/projects', projectRoutes)
 app.use('/api/settings', settingsRoutes)
 app.use('/api/ai', aiRoutes)
 app.use('/api/agents', agentRoutes)
+app.use('/api/skills', skillRoutes)
 
 /**
  * health
