@@ -25,12 +25,27 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+const redact = (value: any): any => {
+  const sensitiveKeys = new Set(['password', 'api_key', 'authorization', 'token'])
+  if (Array.isArray(value)) return value.map(redact)
+  if (value && typeof value === 'object') {
+    const out: any = {}
+    Object.entries(value).forEach(([k, v]) => {
+      if (sensitiveKeys.has(k.toLowerCase())) out[k] = '[REDACTED]'
+      else out[k] = redact(v)
+    })
+    return out
+  }
+  return value
+}
+
 // Custom Request Logger for full URL and body
 app.use((req: Request, res: Response, next: NextFunction) => {
   const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
   console.log(`[Incoming] ${req.method} ${fullUrl}`, {
-    body: req.body,
-    query: req.query
+    body: redact(req.body),
+    query: redact(req.query),
+    headers: redact({ authorization: req.headers.authorization })
   });
   next();
 });
@@ -62,9 +77,13 @@ app.use(
  * error handler middleware
  */
 app.use((_error: Error, req: Request, res: Response, _next: NextFunction) => {
-  res.status(500).json({
+  console.error('[Global Error Handler]', _error);
+  const anyErr: any = _error as any
+  const status = Number(anyErr?.status || anyErr?.statusCode || 500)
+  const message = typeof anyErr?.message === 'string' && anyErr.message.trim() ? anyErr.message : 'Server internal error'
+  res.status(status >= 400 && status < 600 ? status : 500).json({
     success: false,
-    error: 'Server internal error',
+    error: message,
   })
 })
 

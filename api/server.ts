@@ -20,6 +20,7 @@ const startServer = (port: number) => {
 
   server.on('error', (err: any) => {
     if (err?.code === 'EADDRINUSE' && port < basePort + 10) {
+      console.warn(`[Port Conflict] Port ${port} is occupied, trying ${port + 1}...`);
       startServer(port + 1);
       return;
     }

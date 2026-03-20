@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Handle, NodeProps, Position, useEdges, useNodes, useReactFlow, NodeResizer } from '@xyflow/react';
 import { Check, Film, Sparkles, Trash2, Volume2, VolumeX, Image as ImageIcon, X } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 type Resolution = '480p' | '720p' | '1080p';
 type Ratio = '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | 'adaptive';
@@ -19,27 +20,27 @@ const MODEL_CONFIGS: Record<string, {
     durationRange: [4, 12],
   },
   'doubao-seedance-1-0-pro-250528': {
-    supportAudio: false,
+    supportAudio: true,
     supportI2VFirst: true,
     supportI2VFirstLast: true,
     durationRange: [2, 12],
   },
   'doubao-seedance-1-0-pro-fast-251015': {
-    supportAudio: false,
+    supportAudio: true,
     supportI2VFirst: true,
-    supportI2VFirstLast: false,
+    supportI2VFirstLast: true,
     durationRange: [2, 12],
   },
   'doubao-seedance-1-0-lite-t2v-250428': {
-    supportAudio: false,
+    supportAudio: true,
     supportI2VFirst: true,
     supportI2VFirstLast: true,
     durationRange: [2, 12],
   },
   'doubao-seedance-1-0-lite-i2v-250428': {
-    supportAudio: false,
-    supportI2VFirst: false,
-    supportI2VFirstLast: false,
+    supportAudio: true,
+    supportI2VFirst: true,
+    supportI2VFirstLast: true,
     durationRange: [2, 12],
   },
 };
@@ -129,11 +130,12 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
     }
 
     imageNodes.sort((a, b) => a.position.y - b.position.y);
+    const byId = new Map(nodes.map((n) => [n.id, n] as const));
     return {
       upstreamTextNode: textNodes[0] || null,
       upstreamImageNodes: imageNodes,
       upstreamStoryboardNode: storyboardNodes[0] || null,
-      hasOutputConnection: edges.some(e => e.source === id && e.sourceHandle === 'output')
+      hasOutputConnection: edges.some((e) => e.source === id && e.sourceHandle === 'output' && byId.get(e.target)?.type === 'video-preview'),
     };
   }, [edges, id, nodes]);
 
@@ -145,7 +147,10 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
   const referenceImages = useMemo(() => {
     const images = upstreamImageNodes.map((node: any) => ({
       id: node?.id as string,
-      url: (node?.data?.imageUrl as string | undefined) || null
+      url:
+        (Array.isArray(node?.data?.imageUrls) && node.data.imageUrls.length > 0
+          ? (node.data.imageUrls[0] as string)
+          : (node?.data?.imageUrl as string | undefined)) || null
     }));
 
     if (upstreamStoryboardNode) {
@@ -171,10 +176,28 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
     }));
   }, [referenceImages]);
 
-  const imageUrls = useMemo(
-    () => referenceImages.map(img => img.url).filter(Boolean) as string[],
-    [referenceImages]
-  );
+  const imageUrls = useMemo(() => {
+    const urls: string[] = [];
+    upstreamImageNodes.forEach((node: any) => {
+      const list = Array.isArray(node?.data?.imageUrls) ? node.data.imageUrls : [];
+      if (list.length > 0) {
+        urls.push(...list);
+        return;
+      }
+      if (typeof node?.data?.imageUrl === 'string' && node.data.imageUrl.trim().length > 0) {
+        urls.push(node.data.imageUrl);
+      }
+    });
+
+    if (upstreamStoryboardNode) {
+      const storyboardShots = (upstreamStoryboardNode.data.shots || []) as any[];
+      storyboardShots.forEach((shot) => {
+        if (shot.imageUrl) urls.push(shot.imageUrl);
+      });
+    }
+
+    return urls.filter((u) => typeof u === 'string' && u.trim().length > 0);
+  }, [upstreamImageNodes, upstreamStoryboardNode]);
 
   const modelConfig = useMemo(() => MODEL_CONFIGS[selectedModel] || DEFAULT_CONFIG, [selectedModel]);
 
@@ -250,7 +273,7 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const res = await fetch('/api/settings/apis');
+        const res = await apiFetch('/api/settings/apis');
         const json = await res.json();
         const configs = Array.isArray(json.data) ? json.data : [];
         const videoConfigs = configs.filter((c: any) => c.category === 'video');
@@ -564,12 +587,13 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
   };
 
   const currentModelName = models.find((m) => m.id === selectedModel)?.name || '选择模型';
+  const generating = isGenerating || !!(nodeData as any).isGenerating;
 
   const startPollingTask = (taskId: string) => {
     if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
     pollTimerRef.current = window.setInterval(async () => {
       try {
-        const resp = await fetch(`/api/ai/generate-video/task/${taskId}?modelId=${encodeURIComponent(selectedModel)}`);
+        const resp = await apiFetch(`/api/ai/generate-video/task/${taskId}?modelId=${encodeURIComponent(selectedModel)}`);
         const json = await resp.json();
         if (!json.success) {
           setTaskStatus(`失败: ${json.error || '查询失败'}`);
@@ -614,6 +638,11 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
   };
 
   const handleGenerate = async () => {
+    if (!hasOutputConnection) {
+      setTaskStatus('请先连接输出到视频预览节点');
+      alert('请先从输出端口连接到视频预览节点后再生成。');
+      return;
+    }
     let finalPrompt = prompt;
     if (promptRich) {
         finalPrompt = promptRich.map(seg => seg.t === 'img' ? seg.label : seg.v).join('');
@@ -624,9 +653,8 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
     setIsGenerating(true);
     setTaskStatus('queued');
     try {
-      const response = await fetch('/api/ai/generate-video', {
+      const response = await apiFetch('/api/ai/generate-video', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: finalPrompt,
           inputImages: modelConfig.supportI2VFirst ? imageUrls : [], // Filter out images if model doesn't support I2V
@@ -652,7 +680,7 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[360px] min-h-[240px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${isGenerating ? 'animate-flowline' : ''}`}>
+    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[360px] min-h-[160px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${generating ? 'animate-flowline' : ''}`}>
       <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700 group/header">
         <div className="flex items-center space-x-2">
           <Film size={16} className="text-cyan-400" />
@@ -670,7 +698,7 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
         <Handle type="source" position={Position.Right} id="output" className="w-3 h-3 bg-cyan-500 z-50" />
       </div>
 
-      <NodeResizer minWidth={340} minHeight={220} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
+      <NodeResizer minWidth={340} minHeight={160} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
 
       {/* Reference Images Section */}
       <div className="p-3 border-b border-gray-800">
@@ -684,36 +712,7 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
               referenceImages.map((node, idx) => (
                 <div 
                   key={node.id} 
-                  className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
-                  onClick={() => {
-                    // Insert reference to prompt editor
-                    const token = {
-                      id: node.id,
-                      label: `图片${idx + 1}`,
-                      url: node.url
-                    };
-                    
-                    const editor = promptEditorRef.current;
-                    if (editor) {
-                       const segments = readSegmentsFromEditor();
-                       const newSegments = [...segments, { t: 'text' as const, v: ' ' }, { t: 'img' as const, id: token.id, label: token.label, url: token.url }];
-                       const plain = segmentsToPlainText(newSegments);
-                       setPromptRich(newSegments);
-                       setPrompt(plain);
-                       updateNodeData({ prompt: plain, promptRich: newSegments });
-                       
-                       setTimeout(() => {
-                           editor.focus();
-                           const range = document.createRange();
-                           range.selectNodeContents(editor);
-                           range.collapse(false);
-                           const sel = window.getSelection();
-                           sel?.removeAllRanges();
-                           sel?.addRange(range);
-                       }, 0);
-                    }
-                  }}
-                  title="点击插入到提示词"
+                  className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900 transition-all"
                 >
                   {node.url ? (
                     <img src={node.url} alt="Input" className="w-full h-full object-contain" />
@@ -729,266 +728,17 @@ export default function VideoGenNode({ data, id, selected }: NodeProps) {
             )}
           </div>
 
-          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-cyan-500 z-50" style={{ top: 44, left: -6 }} />
+          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-cyan-500 z-50" style={{ top: 44, left: 0 }} />
           <Handle type="target" position={Position.Left} id="image-input" className="w-4 h-4 bg-cyan-500 opacity-0 pointer-events-none" style={{ top: 44, left: -6 }} />
         </div>
       </div>
 
-      {/* Video Preview / Generation Status Section */}
-      {!hasOutputConnection && (
-      <div className="relative flex-1 min-h-0 bg-black border-b border-gray-800 overflow-hidden">
-        {generatedVideo ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <video src={generatedVideo} controls className="w-full h-full object-contain" />
-          </div>
-        ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600">
-            <Film size={24} className="mb-2 opacity-20" />
-            <span className="text-xs">等待生成</span>
-          </div>
-        )}
-        {isGenerating && (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-sm">
-            <div className="flex flex-col items-center">
-              <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-              <span className="text-xs text-cyan-300">{taskStatus || '生成中...'}</span>
-            </div>
-          </div>
-        )}
-      </div>
-      )}
-
-      {/* Loading Overlay (When preview is hidden) */}
-      {hasOutputConnection && isGenerating && (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm rounded-lg">
-              <div className="flex flex-col items-center">
-                  <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                  <span className="text-xs text-cyan-300 font-medium">{taskStatus || '生成中...'}</span>
-              </div>
-          </div>
-      )}
-
-      {/* Prompt Editor & Controls Section */}
-      <div className="p-3 bg-gray-900 rounded-b-lg flex flex-col gap-3">
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col gap-2 shadow-sm relative">
-          {upstreamTextNode ? (
-            <div className="text-gray-400 text-sm">
-              <div className="text-xs italic">提示词由上游节点提供</div>
-              <div className="mt-1 text-gray-500 text-xs truncate">{(upstreamTextNode.data.content as string) || '...'}</div>
-            </div>
-          ) : (
-            <div
-              ref={promptEditorRef}
-              className="nodrag w-full min-w-0 bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none min-h-16 leading-relaxed whitespace-pre-wrap break-words"
-              style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
-              contentEditable
-              suppressContentEditableWarning
-              onFocus={() => {
-                const editor = promptEditorRef.current;
-                if (!editor) return;
-                if (!promptRich) {
-                  editor.innerHTML = segmentsToHtml([{ t: 'text', v: prompt }]);
-                } else {
-                  editor.innerHTML = segmentsToHtml(promptRich);
-                }
-              }}
-              onInput={() => {
-                const segments = readSegmentsFromEditor();
-                const plain = segmentsToPlainText(segments);
-                setPromptRich(segments);
-                setPrompt(plain);
-                if (!isComposing.current) {
-                  updateNodeData({ prompt: plain, promptRich: segments });
-                }
-                updateMentionStateFromEditor(segments);
-              }}
-              onCompositionStart={() => {
-                isComposing.current = true;
-              }}
-              onCompositionEnd={() => {
-                isComposing.current = false;
-                const segments = readSegmentsFromEditor();
-                const plain = segmentsToPlainText(segments);
-                updateNodeData({ prompt: plain, promptRich: segments });
-              }}
-              onKeyDown={(e) => {
-                if (!mentionState) {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleGenerate();
-                  }
-                  return;
-                }
-
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  setMentionState((s) => (s ? { ...s, activeIndex: Math.min(s.activeIndex + 1, Math.max(filteredMentionCandidates.length - 1, 0)) } : s));
-                  return;
-                }
-
-                if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  setMentionState((s) => (s ? { ...s, activeIndex: Math.max(s.activeIndex - 1, 0) } : s));
-                  return;
-                }
-
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setMentionState(null);
-                  return;
-                }
-
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const active = filteredMentionCandidates[Math.min(mentionState.activeIndex, filteredMentionCandidates.length - 1)];
-                  if (active) {
-                    replaceOffsetsWithToken(mentionState.startOffset, mentionState.endOffset, {
-                      id: active.id,
-                      label: active.label,
-                      url: active.url,
-                    });
-                    setMentionState(null);
-                  }
-                  return;
-                }
-              }}
-              data-placeholder="输入视频提示词，使用 @ 引用参考图…"
-            />
-          )}
-
-          {mentionState && !upstreamTextNode && filteredMentionCandidates.length > 0 && (
-            <div className="absolute left-3 right-3 bottom-[44px] bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-h-40 overflow-y-auto z-50">
-              {filteredMentionCandidates.map((c, idx) => (
-                <button
-                  key={c.id}
-                  onMouseEnter={() => setMentionState((s) => (s ? { ...s, activeIndex: idx } : s))}
-                  onClick={() => {
-                    const s = mentionState;
-                    if (!s) return;
-                    replaceOffsetsWithToken(s.startOffset, s.endOffset, { id: c.id, label: c.label, url: c.url });
-                    setMentionState(null);
-                  }}
-                  className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors ${mentionState.activeIndex === idx ? 'bg-gray-800' : 'hover:bg-gray-800'} text-gray-200`}
-                >
-                  <div className="w-8 h-8 rounded bg-gray-800 border border-gray-700 overflow-hidden flex-shrink-0">
-                    {c.url ? <img src={c.url} alt={c.label} className="w-full h-full object-contain" /> : null}
-                  </div>
-                  <span>{c.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center justify-between mt-1 pt-2 border-t border-gray-700/50">
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="relative" ref={modelMenuRef}>
-                <button
-                  onClick={() => setIsModelMenuOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 transition-colors"
-                >
-                  <Sparkles size={12} />
-                  <span className="max-w-24 truncate">{currentModelName}</span>
-                </button>
-                {isModelMenuOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto">
-                    {models.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => {
-                          setSelectedModel(m.id);
-                          setIsModelMenuOpen(false);
-                          updateNodeData({ modelId: m.id });
-                        }}
-                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-800 transition-colors ${selectedModel === m.id ? 'bg-gray-800/50 text-cyan-300' : 'text-gray-200'}`}
-                      >
-                        <span className="truncate">{m.name}</span>
-                        {selectedModel === m.id && <Check size={12} />}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <select
-                value={resolution}
-                onChange={(e) => {
-                  const v = e.target.value as Resolution;
-                  setResolution(v);
-                  updateNodeData({ resolution: v });
-                }}
-                className="bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-gray-300 outline-none"
-              >
-                <option value="480p">480p</option>
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-              </select>
-
-              <select
-                value={duration}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setDuration(v);
-                  updateNodeData({ duration: v });
-                }}
-                className="bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-gray-300 outline-none"
-              >
-                {Array.from({ length: modelConfig.durationRange[1] - modelConfig.durationRange[0] + 1 }).map((_, idx) => {
-                  const sec = idx + modelConfig.durationRange[0];
-                  return (
-                    <option key={sec} value={sec}>
-                      {sec}s
-                    </option>
-                  );
-                })}
-              </select>
-
-              <select
-                value={ratio}
-                onChange={(e) => {
-                  const v = e.target.value as Ratio;
-                  setRatio(v);
-                  updateNodeData({ ratio: v });
-                }}
-                className="bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-gray-300 outline-none"
-              >
-                <option value="16:9">16:9</option>
-                <option value="9:16">9:16</option>
-                <option value="4:3">4:3</option>
-                <option value="3:4">3:4</option>
-                <option value="1:1">1:1</option>
-                <option value="21:9">21:9</option>
-                <option value="adaptive">adaptive</option>
-              </select>
-
-              <button
-                onClick={() => {
-                  if (!modelConfig.supportAudio) return;
-                  const next = !generateAudio;
-                  setGenerateAudio(next);
-                  updateNodeData({ generateAudio: next });
-                }}
-                disabled={!modelConfig.supportAudio}
-                className={`p-1 rounded transition-colors ${generateAudio ? 'text-cyan-300 bg-cyan-900/20' : 'text-gray-500 hover:text-gray-300'} ${!modelConfig.supportAudio ? 'opacity-30 cursor-not-allowed' : ''}`}
-                title={!modelConfig.supportAudio ? '当前模型不支持音频' : (generateAudio ? '已开启音频' : '已关闭音频')}
-              >
-                {generateAudio ? <Volume2 size={12} /> : <VolumeX size={12} />}
-              </button>
-            </div>
-
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating || (!prompt && !upstreamTextNode)}
-              className={`p-1.5 rounded hover:bg-gray-700 text-cyan-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isGenerating ? 'animate-pulse' : ''}`}
-              title="生成视频"
-            >
-              <Sparkles size={16} />
-            </button>
-          </div>
-        </div>
+      <div className="px-3 py-2 border-b border-gray-800 bg-gray-950/40 text-[11px] text-gray-500">
+        {hasOutputConnection ? '已连接输出：生成结果将推送到下游视频预览节点。' : '未连接输出：请先从输出端口连接到视频预览节点后再生成。'}
       </div>
 
       <Handle type="target" position={Position.Left} id="prompt-area" className="bg-blue-500 opacity-0 z-40" style={{ width: 44, height: 44, borderRadius: 9999, top: '86%', left: -22 }} />
-      <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500 z-50" style={{ top: '88%', left: -6 }} />
+      <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500 z-50" style={{ top: '88%', left: 0 }} />
       <Handle type="target" position={Position.Left} id="text-input" className="w-4 h-4 bg-blue-500 opacity-0 pointer-events-none" style={{ top: '88%', left: -6 }} />
     </div>
   );

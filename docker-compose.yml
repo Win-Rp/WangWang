@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    volumes:
+      # Mount the current directory into /app in the container
+      - .:/app
+      # Create an anonymous volume for node_modules to avoid host/container mismatch
+      - /app/node_modules
+    ports:
+      # Vite Frontend
+      - "5173:5173"
+      # Express Backend
+      - "3001:3001"
+    environment:
+      # Pass any environment variables here
+      - PORT=3001
+      - NODE_ENV=development
+    # Ensure it restarts automatically if needed
+    restart: unless-stopped

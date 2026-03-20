@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, X, AlignLeft, Image as ImageIcon, Video, Mic, Book, Eye, EyeOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { apiFetch } from '@/lib/api';
+import { useAuthStore } from '@/lib/auth';
 
 interface ApiConfig {
   id: string;
@@ -34,16 +36,16 @@ const PROVIDERS: Record<string, { name: string; models: string[] }[]> = {
     { name: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
     { name: '火山引擎', models: ['doubao-pro-32k', 'doubao-lite-32k'] },
     { name: '阿里', models: ['qwen-turbo', 'qwen-plus', 'qwen-max'] },
-    { name: 'NewAPI', models: [] }
+    { name: 'NewAPI', models: ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'imagen-3.0-generate-001'] }
   ],
   image: [
-    { name: 'Google', models: ['gemini-3.1-flash-image-preview'] },
+    { name: 'Google', models: ['imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'] },
     { name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { name: 'xAI', models: [] },
     { name: 'DeepSeek', models: [] },
     { name: '火山引擎', models: ['doubao-seedream-5-0-260128', 'doubao-seedream-3-0-t2i-250415'] },
     { name: '阿里', models: ['wanx-v1'] },
-    { name: 'NewAPI', models: [] }
+    { name: 'NewAPI', models: ['imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'] }
   ],
   video: [
     { name: 'Google', models: [] },
@@ -134,7 +136,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({ providerName, providerConfi
       if (activeConfig) {
         if (confirm(`确定要删除 ${providerName} 的 ${CATEGORIES.find(c => c.id === activeTab)?.name.replace('模型', '')} 配置吗？`)) {
           try {
-            await fetch(`/api/settings/apis/${activeConfig.id}`, { method: 'DELETE' });
+            await apiFetch(`/api/settings/apis/${activeConfig.id}`, { method: 'DELETE' });
             await fetchConfigs();
             showToast('配置已删除');
           } catch (error) {
@@ -165,9 +167,8 @@ const ProviderCard: React.FC<ProviderCardProps> = ({ providerName, providerConfi
           : '/api/settings/apis';
         const method = existingCatConfig ? 'PUT' : 'POST';
 
-        return fetch(url, {
+        return apiFetch(url, {
           method,
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
       });
@@ -194,7 +195,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({ providerName, providerConfi
     setTestingId(activeConfig.id);
     setTestStatus(null);
     try {
-      const response = await fetch(`/api/settings/apis/${activeConfig.id}/test`, { method: 'POST' });
+      const response = await apiFetch(`/api/settings/apis/${activeConfig.id}/test`, { method: 'POST' });
       const json = await response.json();
       if (response.ok && json?.success) {
         showToast(`测试成功：配置可用`);
@@ -230,7 +231,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({ providerName, providerConfi
       let fetchedModels: string[] = [];
       try {
         console.log(`[FetchModels] Calling backend proxy: /api/settings/apis/${activeConfig.id}/models/fetch`);
-        const response = await fetch(`/api/settings/apis/${activeConfig.id}/models/fetch`);
+        const response = await apiFetch(`/api/settings/apis/${activeConfig.id}/models/fetch`);
         const data = await response.json();
         if (response.ok && Array.isArray(data.models)) {
           fetchedModels = data.models;
@@ -625,7 +626,7 @@ export default function Settings() {
 
   const fetchConfigs = async () => {
     try {
-      const response = await fetch('/api/settings/apis');
+      const response = await apiFetch('/api/settings/apis');
       const data = await response.json();
       const normalized = (data.data || []).map((config: ApiConfig) => ({
         ...config,
@@ -641,9 +642,8 @@ export default function Settings() {
 
   const handleUpdateModels = async (config: ApiConfig, newModels: Model[]) => {
     try {
-      const response = await fetch(`/api/settings/apis/${config.id}`, {
+      const response = await apiFetch(`/api/settings/apis/${config.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...config, models: newModels }),
       });
       if (response.ok) {

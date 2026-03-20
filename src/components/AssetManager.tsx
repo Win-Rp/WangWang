@@ -4,6 +4,7 @@ import {
   LayoutGrid, Type, Image as ImageIcon, 
   Film, Music, User, Star, ChevronDown, Save
 } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface Agent {
   id: string;
@@ -54,7 +55,7 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
   const fetchAgents = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/agents');
+      const res = await apiFetch('/api/agents');
       const data = await res.json();
       if (data.success) {
         setAgents(data.data);
@@ -69,7 +70,7 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
   const fetchSkills = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/skills');
+      const res = await apiFetch('/api/skills');
       const data = await res.json();
       if (data.success) {
         setSkills(data.data);
@@ -91,9 +92,8 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
     const url = currentAgent.id ? `/api/agents/${currentAgent.id}` : '/api/agents';
 
     try {
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentAgent),
       });
       const data = await res.json();
@@ -117,9 +117,8 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
     const url = currentSkill.id ? `/api/skills/${currentSkill.id}` : '/api/skills';
 
     try {
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentSkill),
       });
       const data = await res.json();
@@ -136,7 +135,7 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
   const handleDeleteAgent = async (id: string) => {
     if (!confirm('确定要删除这个智能体吗？')) return;
     try {
-      const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/agents/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         fetchAgents();
@@ -149,7 +148,7 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
   const handleDeleteSkill = async (id: string) => {
     if (!confirm('确定要删除这个技能吗？')) return;
     try {
-      const res = await fetch(`/api/skills/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/skills/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         fetchSkills();
@@ -459,7 +458,7 @@ export default function AssetManager({ onClose }: AssetManagerProps) {
                 </label>
                 <textarea 
                   placeholder={editingType === 'agent' ? '定义智能体的角色和行为，例如：你是一个专业的文案翻译专家...' : '定义技能的内容，例如：生成代码前先澄清需求，再给出实现与验收清单...'}
-                  className="w-full h-40 bg-gray-900 border border-gray-800 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 rounded-xl px-4 py-3 text-sm text-gray-200 outline-none resize-none transition-all custom-scrollbar"
+                  className="w-full h-40 bg-gray-900 border border-gray-800 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 rounded-xl px-4 py-3 text-sm text-gray-200 outline-none resize-none transition-all custom-scrollbar overflow-y-auto"
                   value={editingType === 'agent' ? (currentAgent?.system_prompt || '') : (currentSkill?.content || '')}
                   onChange={(e) => {
                     if (editingType === 'agent') {

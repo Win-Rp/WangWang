@@ -39,13 +39,17 @@
     scrollbar-width: thin;
     scrollbar-color: rgba(75, 85, 99, 0.4) transparent;
   }
+
+  textarea {
+    overflow: auto;
+    scrollbar-gutter: stable;
+  }
 }
 
 @layer components {
   /* Flowline animation for nodes */
   .animate-flowline {
     position: relative;
-    overflow: hidden;
   }
 
   .animate-flowline::after {
@@ -59,6 +63,7 @@
     background-size: 200% 100%;
     z-index: -1;
     border-radius: inherit;
+    pointer-events: none;
     animation: flowline 2s linear infinite;
   }
 
@@ -69,5 +74,14 @@
     100% {
       background-position: -200% 0;
     }
+  }
+
+  .react-flow__edge-path {
+    stroke-width: 4px;
+  }
+
+  .react-flow__edge:hover .react-flow__edge-path {
+    stroke-width: 5px;
+    cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20width%3D%2732%27%20height%3D%2732%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%276%27%20cy%3D%276%27%20r%3D%273%27/%3E%3Ccircle%20cx%3D%276%27%20cy%3D%2718%27%20r%3D%273%27/%3E%3Cline%20x1%3D%2720%27%20y1%3D%274%27%20x2%3D%278.12%27%20y2%3D%2715.88%27/%3E%3Cline%20x1%3D%2714.47%27%20y1%3D%2714.48%27%20x2%3D%2720%27%20y2%3D%2720%27/%3E%3Cline%20x1%3D%278.12%27%20y1%3D%278.12%27%20x2%3D%2712%27%20y2%3D%2712%27/%3E%3C/svg%3E") 8 8, pointer;
   }
 }

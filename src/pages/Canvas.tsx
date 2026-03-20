@@ -20,9 +20,9 @@ import {
 import '@xyflow/react/dist/style.css';
 import { 
   Settings, FileText, Film, Image as ImageIcon, Play, Sparkles, 
-  Plus, LayoutGrid
+  Plus, LayoutGrid, LogOut
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import TextNode from '../components/nodes/TextNode';
 import ImageNode from '../components/nodes/ImageNode';
@@ -30,7 +30,11 @@ import ImageGenNode from '../components/nodes/ImageGenNode';
 import VideoGenNode from '../components/nodes/VideoGenNode';
 import VideoPreviewNode from '../components/nodes/VideoPreviewNode';
 import StoryboardNode from '../components/nodes/StoryboardNode';
+import StoryboardGridNode from '../components/nodes/StoryboardGridNode';
 import AssetManager from '../components/AssetManager';
+import NodeFloatingPanel from '../components/NodeFloatingPanel';
+import { apiFetch } from '@/lib/api';
+import { useAuthStore } from '@/lib/auth';
 
 // Custom Node Types (will implement later, using default for now or simple custom)
 const nodeTypes = {
@@ -39,7 +43,8 @@ const nodeTypes = {
   'image-gen': ImageGenNode,
   video: VideoGenNode,
   'video-preview': VideoPreviewNode,
-  storyboard: StoryboardNode
+  storyboard: StoryboardNode,
+  'storyboard-grid': StoryboardGridNode
 };
 
 const INITIAL_NODES: Node[] = [];
@@ -115,43 +120,131 @@ function CanvasContent() {
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string | null } | null>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, toObject, setViewport } = useReactFlow();
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [isAssetManagerOpen, setIsAssetManagerOpen] = useState(false);
+  const navigate = useNavigate();
+  const logout = useAuthStore((s) => s.logout);
+  const user = useAuthStore((s) => s.user);
 
-  const saveProject = useCallback(async () => {
-    if (!projectId) return;
-    
-    const flow = toObject();
+  const handleLogout = useCallback(async () => {
     try {
-      await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          canvas_data: flow
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error('Logout request failed', e);
+    }
+    logout();
+    navigate('/login');
+   }, [logout, navigate]);
+
+   const [projectId, setProjectId] = useState<string | null>(null);
+   const [projectName, setProjectName] = useState<string>('My Project');
+   const [isAssetManagerOpen, setIsAssetManagerOpen] = useState(false);
+   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+   const isHydratingRef = useRef(false);
+   const hasLoadedRef = useRef(false);
+   const saveTimerRef = useRef<number | null>(null);
+   const savingRef = useRef(false);
+   const savePendingRef = useRef(false);
+   const dirtyRef = useRef(false);
+   const lastSnapshotRef = useRef<string>('');
+   const hasInitSnapshotRef = useRef(false);
+
+   const buildPersistedFlow = useCallback(() => {
+    const flow: any = toObject();
+    flow.nodes = Array.isArray(flow.nodes)
+      ? flow.nodes.map((n: any) => {
+          const { selected, dragging, positionAbsolute, ...rest } = n || {};
+          return rest;
         })
+      : [];
+    flow.edges = Array.isArray(flow.edges)
+      ? flow.edges.map((e: any) => {
+          const { selected, ...rest } = e || {};
+          return rest;
+        })
+      : [];
+    return flow;
+   }, [toObject]);
+
+   const flushSave = useCallback(async () => {
+    if (!projectId) return;
+    if (isHydratingRef.current || !hasLoadedRef.current) return;
+    if (savingRef.current) {
+      savePendingRef.current = true;
+      return;
+    }
+
+    dirtyRef.current = false;
+    savingRef.current = true;
+
+    try {
+      const flow = buildPersistedFlow();
+      const resp = await apiFetch(`/api/projects/${projectId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: projectName,
+          canvas_data: flow,
+        }),
       });
-      console.log('Project auto-saved');
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        console.error('Project auto-save failed:', err);
+      }
     } catch (error) {
       console.error('Error saving project:', error);
+    } finally {
+      savingRef.current = false;
+      if (savePendingRef.current) {
+        savePendingRef.current = false;
+        window.setTimeout(() => {
+          flushSave();
+        }, 0);
+      }
     }
-  }, [projectId, toObject]);
+   }, [projectId, projectName, buildPersistedFlow]);
 
-  // Auto-save on unmount
-  useEffect(() => {
+   const scheduleAutoSave = useCallback(() => {
+    if (!projectId) return;
+    if (isHydratingRef.current || !hasLoadedRef.current) return;
+    dirtyRef.current = true;
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      flushSave();
+    }, 600);
+   }, [projectId, flushSave]);
+
+   useEffect(() => {
+    if (!projectId) return;
+    if (isHydratingRef.current || !hasLoadedRef.current) return;
+    const snap = JSON.stringify(buildPersistedFlow());
+    if (!hasInitSnapshotRef.current) {
+      hasInitSnapshotRef.current = true;
+      lastSnapshotRef.current = snap;
+      return;
+    }
+    if (snap !== lastSnapshotRef.current) {
+      lastSnapshotRef.current = snap;
+      scheduleAutoSave();
+    }
+   }, [projectId, nodes, edges, buildPersistedFlow, scheduleAutoSave]);
+
+   useEffect(() => {
     return () => {
-      saveProject();
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      flushSave();
     };
-  }, [saveProject]);
+   }, [flushSave]);
 
   // Load latest project on mount
   useEffect(() => {
     const loadProject = async () => {
       try {
-        const res = await fetch('/api/projects');
+        isHydratingRef.current = true;
+        const res = await apiFetch('/api/projects');
         const data = await res.json();
         if (data.data && data.data.length > 0) {
           const project = data.data[0];
           setProjectId(project.id);
+          setProjectName(project.name || 'My Project');
           if (project.canvas_data) {
             const flow = JSON.parse(project.canvas_data);
             if (flow) {
@@ -162,12 +255,15 @@ function CanvasContent() {
               }
             }
           }
+          hasLoadedRef.current = true;
         } else {
           // Create new project if none exists
           createNewProject();
         }
       } catch (error) {
         console.error('Error loading project:', error);
+      } finally {
+        isHydratingRef.current = false;
       }
     };
     loadProject();
@@ -175,9 +271,8 @@ function CanvasContent() {
 
   const createNewProject = async () => {
     try {
-      const res = await fetch('/api/projects', {
+      const res = await apiFetch('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: 'My Project',
           canvas_data: { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }
@@ -186,35 +281,67 @@ function CanvasContent() {
       const data = await res.json();
       if (data.data) {
         setProjectId(data.data.id);
+        setProjectName(data.data.name || 'My Project');
+        hasLoadedRef.current = true;
       }
     } catch (error) {
       console.error('Error creating project:', error);
     }
   };
 
-  const handleManualSave = async () => {
-    if (!projectId) return;
-    
-    const flow = toObject();
-    try {
-      await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          canvas_data: flow
-        })
-      });
-      alert('保存成功');
-    } catch (error) {
-      console.error('Error saving project:', error);
-      alert('保存失败');
-    }
-  };
+  const onNodesChangeAuto = useCallback(
+    (changes: any[]) => {
+      onNodesChange(changes);
+      const meaningful = changes.some((c) => c?.type && c.type !== 'select' && c.type !== 'dimensions');
+      if (meaningful) scheduleAutoSave();
+    },
+    [onNodesChange, scheduleAutoSave],
+  );
+
+  const onEdgesChangeAuto = useCallback(
+    (changes: any[]) => {
+      onEdgesChange(changes);
+      const meaningful = changes.some((c) => c?.type && c.type !== 'select');
+      if (meaningful) scheduleAutoSave();
+    },
+    [onEdgesChange, scheduleAutoSave],
+  );
 
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds) => addEdge(params, eds)),
-    [setEdges],
+    (params: Connection) => {
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...params,
+            type: 'default',
+            style: { strokeWidth: 4 },
+          },
+          eds,
+        ),
+      );
+      scheduleAutoSave();
+    },
+    [setEdges, scheduleAutoSave],
   );
+
+  const onEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      event.stopPropagation();
+      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+      scheduleAutoSave();
+    },
+    [setEdges, scheduleAutoSave],
+  );
+
+  useEffect(() => {
+    setEdges((eds) =>
+      eds.map((e) => {
+        const strokeWidth = (e.style as any)?.strokeWidth;
+        if (typeof strokeWidth === 'number') return e;
+        return { ...e, type: e.type || 'default', style: { ...(e.style || {}), strokeWidth: 4 } };
+      }),
+    );
+  }, [setEdges]);
 
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
@@ -253,6 +380,7 @@ function CanvasContent() {
           )
           setPendingConnection(null)
           setMenu(null)
+          scheduleAutoSave()
           return
         }
 
@@ -284,6 +412,10 @@ function CanvasContent() {
     event.stopPropagation(); // Prevent pane click
     setMenu(null);
     setPendingConnection(null);
+  }, []);
+
+  const onSelectionChange = useCallback((params: { nodes: Node[]; edges: Edge[] }) => {
+    setSelectedNodeId(params.nodes?.[0]?.id || null);
   }, []);
 
   // Double click to open menu
@@ -333,6 +465,14 @@ function CanvasContent() {
 
     // Check if the type is supported in nodeTypes
     const isCustomNode = Object.keys(nodeTypes).includes(type);
+    const defaultCustomStyleByType: Record<string, { width: number; height: number }> = {
+      text: { width: 360, height: 260 },
+      image: { width: 280, height: 220 },
+      'image-gen': { width: 360, height: 180 },
+      video: { width: 360, height: 200 },
+      storyboard: { width: 520, height: 520 },
+      'video-preview': { width: 360, height: 260 },
+    };
 
     const newNode: Node = {
       id: nodeId,
@@ -343,7 +483,9 @@ function CanvasContent() {
         content: '',
         prompt: '',
       },
-      style: isCustomNode ? undefined : { 
+      style: isCustomNode
+        ? defaultCustomStyleByType[type] || { width: 360, height: 260 }
+        : { 
         background: '#1e1e1e', 
         color: '#fff', 
         border: '1px solid #3b82f6',
@@ -354,6 +496,7 @@ function CanvasContent() {
     };
 
     setNodes((nds) => nds.concat(newNode));
+    scheduleAutoSave()
     
     if (pendingConnection) {
       let targetHandle: string | null = null;
@@ -454,6 +597,29 @@ function CanvasContent() {
     setMenu(null);
   };
 
+  const addImageNodeFromDrop = useCallback(
+    (clientX: number, clientY: number, imageUrl: string) => {
+      const position = screenToFlowPosition({ x: clientX, y: clientY });
+      const nodeId = `image-${Date.now()}`;
+      const newNode: Node = {
+        id: nodeId,
+        type: 'image',
+        position,
+        data: {
+          label: '图片节点',
+          imageUrl,
+          imageUrls: [imageUrl],
+          rotation: 0,
+          scale: 1,
+        },
+        style: { width: 280, height: 220 },
+      };
+      setNodes((nds) => nds.concat(newNode));
+      scheduleAutoSave()
+    },
+    [screenToFlowPosition, setNodes, scheduleAutoSave],
+  );
+
   return (
     <div className="h-screen w-screen bg-[#1a1a1a] flex flex-col">
       {/* Header */}
@@ -466,12 +632,19 @@ function CanvasContent() {
           <span className="font-bold text-white">旺旺</span>
         </div>
         <div className="flex items-center space-x-4">
+          <div className="flex items-center bg-gray-800 rounded-full px-3 py-1 border border-gray-700">
+            <span className="text-xs text-gray-400 mr-2">{user?.email}</span>
+            <button 
+              onClick={handleLogout} 
+              className="text-gray-400 hover:text-red-400 transition-colors p-1"
+              title="退出登录"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
           <Link to="/settings" className="p-2 text-gray-400 hover:text-white transition-colors">
             <Settings size={20} />
           </Link>
-          <button onClick={handleManualSave} className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-colors">
-            保存
-          </button>
           <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-colors flex items-center">
             <Play size={14} className="mr-1.5" /> 运行工作流
           </button>
@@ -484,18 +657,35 @@ function CanvasContent() {
         ref={reactFlowWrapper} 
         style={{ height: 'calc(100vh - 3.5rem)' }}
         onDoubleClick={onPaneDoubleClick}
+        onDragOver={(e) => {
+          if (e.dataTransfer?.types?.includes('application/x-wangwang-image-url')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }
+        }}
+        onDrop={(e) => {
+          const url = e.dataTransfer.getData('application/x-wangwang-image-url');
+          if (!url) return;
+          e.preventDefault();
+          addImageNodeFromDrop(e.clientX, e.clientY, url);
+        }}
       >
         <ReactFlow
           nodes={nodes}
           edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
+          onNodesChange={onNodesChangeAuto}
+          onEdgesChange={onEdgesChangeAuto}
           onConnect={onConnect}
           onConnectEnd={onConnectEnd}
           onPaneClick={onPaneClick}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onPaneContextMenu={onPaneContextMenu}
+          onSelectionChange={onSelectionChange}
           nodeTypes={nodeTypes}
+          defaultEdgeOptions={{ type: 'default', style: { strokeWidth: 4 }, interactionWidth: 24 }}
+          connectionLineStyle={{ strokeWidth: 4 }}
+          onMoveEnd={() => scheduleAutoSave()}
           colorMode="dark"
           panOnScroll
           selectionOnDrag
@@ -521,6 +711,15 @@ function CanvasContent() {
           />
           <ZoomDisplay />
         </ReactFlow>
+
+        <NodeFloatingPanel
+          selectedNodeId={selectedNodeId}
+          wrapperRef={reactFlowWrapper}
+          onClose={() => {
+            setSelectedNodeId(null);
+            setNodes((nds) => nds.map((n) => ({ ...n, selected: false })));
+          }}
+        />
 
         {/* Vertical Side Toolbar */}
         <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col bg-[#1e1e1e] border border-gray-800 rounded-2xl shadow-2xl p-2 space-y-2 z-40">

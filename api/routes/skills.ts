@@ -1,11 +1,14 @@
 import express, { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.ts';
+import { requireAuth } from '../middleware/auth.ts';
 
 const router = express.Router();
 
+router.use(requireAuth);
+
 router.get('/', (req: Request, res: Response) => {
-  db.all('SELECT * FROM skills ORDER BY created_at DESC', [], (err, rows) => {
+  db.all('SELECT * FROM skills WHERE user_id = ? ORDER BY created_at DESC', [req.user!.id], (err, rows) => {
     if (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -21,8 +24,8 @@ router.post('/', (req: Request, res: Response) => {
 
   const id = uuidv4();
   db.run(
-    'INSERT INTO skills (id, name, content) VALUES (?, ?, ?)',
-    [id, name, content],
+    'INSERT INTO skills (id, user_id, name, content) VALUES (?, ?, ?, ?)',
+    [id, req.user!.id, name, content],
     function (err) {
       if (err) {
         return res.status(500).json({ success: false, error: err.message });
@@ -41,11 +44,14 @@ router.put('/:id', (req: Request, res: Response) => {
   }
 
   db.run(
-    'UPDATE skills SET name = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [name, content, id],
+    'UPDATE skills SET name = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    [name, content, id, req.user!.id],
     function (err) {
       if (err) {
         return res.status(500).json({ success: false, error: err.message });
+      }
+      if ((this as any).changes === 0) {
+        return res.status(404).json({ success: false, error: '技能不存在' });
       }
       res.json({ success: true, data: { id, name, content } });
     }
@@ -54,9 +60,12 @@ router.put('/:id', (req: Request, res: Response) => {
 
 router.delete('/:id', (req: Request, res: Response) => {
   const { id } = req.params;
-  db.run('DELETE FROM skills WHERE id = ?', [id], function (err) {
+  db.run('DELETE FROM skills WHERE id = ? AND user_id = ?', [id, req.user!.id], function (err) {
     if (err) {
       return res.status(500).json({ success: false, error: err.message });
+    }
+    if ((this as any).changes === 0) {
+      return res.status(404).json({ success: false, error: '技能不存在' });
     }
     res.json({ success: true, message: '技能已删除' });
   });

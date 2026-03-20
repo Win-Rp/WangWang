@@ -1,7 +1,10 @@
 import express, { type Request, type Response } from 'express';
 import db from '../db/index.ts';
+import { requireAuth } from '../middleware/auth.ts';
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 type ApiConfigRow = {
   api_config_id: string;
@@ -58,16 +61,32 @@ const normalizeBaseUrl = (baseUrl: string) => baseUrl.trim().replace(/[`'"]/g, '
 const maskApiKey = (apiKey: string) => (apiKey.length <= 8 ? '***' : `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}`);
 const isSeedream3T2IModel = (modelId: string) =>
   modelId.includes('seedream-3-0-t2i') || modelId.includes('seedream-3.0-t2i');
-const isGeminiModel = (modelId: string) =>
-  modelId.toLowerCase().includes('gemini');
+const isGeminiModel = (modelId: string, provider?: string) => {
+  const id = modelId.toLowerCase();
+  // 包含 gemini 或 imagen 关键字的模型，或者明确指定为 Google 厂商的模型
+  return id.includes('gemini') || id.includes('imagen') || id.startsWith('google/') || provider === 'Google';
+};
 
-const normalizeGeminiNativeBaseUrl = (baseUrl: string) => {
-  const normalized = normalizeBaseUrl(baseUrl);
-  const withoutOpenAI = normalized.replace(/\/openai$/i, '');
-  if (/\/v1$/i.test(withoutOpenAI)) {
-    return withoutOpenAI.replace(/\/v1$/i, '/v1beta');
+const normalizeGeminiNativeBaseUrl = (baseUrl: string, provider?: string) => {
+  let normalized = normalizeBaseUrl(baseUrl);
+  
+  // 移除可能存在的 /openai 或 /v1 后缀，以便重新构建原生路径
+  normalized = normalized.replace(/\/openai$/i, '');
+  
+  // 对于 NewAPI 或 OpenAI 厂商，如果 URL 只是域名，通常需要补全路径
+  if (provider === 'NewAPI' || provider === 'OpenAI') {
+    // 如果没有版本号，补全 /v1beta
+    if (!/\/v1(beta)?$/i.test(normalized)) {
+      normalized = `${normalized}/v1beta`;
+    }
   }
-  return withoutOpenAI;
+
+  // 统一转换为 v1beta 以支持原生协议
+  if (/\/v1$/i.test(normalized)) {
+    return normalized.replace(/\/v1$/i, '/v1beta');
+  }
+  
+  return normalized;
 };
 
 const resolveGeminiImageSize = (quality: string | undefined) => {
@@ -156,7 +175,7 @@ const resolveSize = (quality: string | undefined, aspectRatio: string | undefine
 
 const videoTaskConfigMap = new Map<string, { baseUrl: string; apiKey: string; provider: string }>();
 
-const queryConfigsByCategory = async (category: string): Promise<ModelConfig[]> => {
+const queryConfigsByCategory = async (category: string, userId: string): Promise<ModelConfig[]> => {
   const sql = `
     SELECT
       ac.id AS api_config_id,
@@ -168,12 +187,12 @@ const queryConfigsByCategory = async (category: string): Promise<ModelConfig[]> 
       m.is_default
     FROM api_configs ac
     LEFT JOIN models m ON ac.id = m.api_config_id
-    WHERE ac.category = ?
+    WHERE ac.category = ? AND ac.user_id = ?
     ORDER BY ac.provider ASC
   `;
 
   const rows = await new Promise<ApiConfigRow[]>((resolve, reject) => {
-    db.all(sql, [category], (err, resultRows?: ApiConfigRow[]) => {
+    db.all(sql, [category, userId], (err, resultRows?: ApiConfigRow[]) => {
       if (err) {
         reject(err);
         return;
@@ -205,8 +224,8 @@ const queryConfigsByCategory = async (category: string): Promise<ModelConfig[]> 
   return Array.from(grouped.values());
 };
 
-const resolveConfigAndModel = async (category: string, modelId?: string) => {
-  const configs = await queryConfigsByCategory(category);
+const resolveConfigAndModel = async (category: string, userId: string, modelId?: string) => {
+  const configs = await queryConfigsByCategory(category, userId);
   if (configs.length === 0) {
     const categoryName = category === 'video' ? '视频' : category === 'image' ? '图片' : '文本';
     return { error: `未找到${categoryName}模型配置，请先到设置页添加服务商。` };
@@ -243,7 +262,7 @@ router.post('/generate-text', async (req: Request, res: Response) => {
   }
 
   try {
-    const resolved = await resolveConfigAndModel('text', modelId);
+    const resolved = await resolveConfigAndModel('text', req.user!.id, modelId);
     if ('error' in resolved) {
       return res.status(400).json({ success: false, error: resolved.error });
     }
@@ -350,7 +369,7 @@ router.post('/decompose-script', async (req: Request, res: Response) => {
   }
 
   try {
-    const resolved = await resolveConfigAndModel('text', modelId);
+    const resolved = await resolveConfigAndModel('text', req.user!.id, modelId);
     if ('error' in resolved) {
       return res.status(400).json({ success: false, error: resolved.error });
     }
@@ -453,7 +472,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
       inputImagesPreview: Array.isArray(inputImages) ? inputImages.slice(0, 3) : [],
     });
 
-    const resolved = await resolveConfigAndModel('image', modelId);
+    const resolved = await resolveConfigAndModel('image', req.user!.id, modelId);
     if ('error' in resolved) {
       console.warn('[ImageGen] 配置解析失败:', resolved.error);
       return res.status(400).json({ success: false, error: resolved.error });
@@ -470,7 +489,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: '服务商配置缺少 Base URL 或 API Key。' });
     }
 
-    if (isGeminiModel(finalModelId)) {
+    if (isGeminiModel(finalModelId, config.provider)) {
       const images = Array.isArray(inputImages)
         ? inputImages.filter((item) => typeof item === 'string' && item.trim().length > 0)
         : [];
@@ -481,7 +500,10 @@ router.post('/generate-image', async (req: Request, res: Response) => {
         if (part) parts.push(part);
       }
 
-      const endpoint = `${normalizeGeminiNativeBaseUrl(config.baseUrl)}/models/${finalModelId}:generateContent`;
+      // 适配 NewAPI/OpenAI 兼容路径，强制转换为 Gemini Native 协议路径
+      const nativeBaseUrl = normalizeGeminiNativeBaseUrl(config.baseUrl, config.provider);
+      const endpoint = `${nativeBaseUrl}/models/${finalModelId}:generateContent`;
+      
       const payload: Record<string, unknown> = {
         contents: [
           {
@@ -497,7 +519,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
         },
       };
 
-      console.log('[ImageGen] 即将请求上游(Gemini Native):', {
+      console.log(`[ImageGen] 即将请求上游(Gemini Native${config.provider === 'NewAPI' ? ' via NewAPI' : ''}):`, {
         provider: config.provider,
         url: endpoint,
         resolvedModelId: finalModelId,
@@ -526,21 +548,29 @@ router.post('/generate-image', async (req: Request, res: Response) => {
         return res.status(upstream.status).json({ success: false, error: upstreamMessage });
       }
 
-      const candidate = Array.isArray(result?.candidates) ? result.candidates[0] : null;
-      const content = candidate?.content || null;
-      const respParts = Array.isArray(content?.parts) ? content.parts : [];
-      const imagePart = respParts.find((p: any) => p?.inline_data || p?.inlineData) || null;
-      const inlineData = (imagePart?.inline_data || imagePart?.inlineData) as any;
-      const data = inlineData?.data ? String(inlineData.data) : '';
-      const mimeType = inlineData?.mime_type || inlineData?.mimeType || 'image/png';
+      const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+      const imageUrls: string[] = [];
 
-      if (!data) {
+      for (const c of candidates) {
+        const content = c?.content || null;
+        const respParts = Array.isArray(content?.parts) ? content.parts : [];
+        for (const p of respParts) {
+          const inlineData = (p?.inline_data || p?.inlineData) as any;
+          const data = inlineData?.data ? String(inlineData.data) : '';
+          if (!data) continue;
+          const mimeType = inlineData?.mime_type || inlineData?.mimeType || 'image/png';
+          imageUrls.push(`data:${mimeType};base64,${data}`);
+        }
+      }
+
+      if (imageUrls.length === 0) {
         return res.status(502).json({ success: false, error: '未从上游返回中解析到图片结果。' });
       }
 
       return res.json({
         success: true,
-        imageUrl: `data:${mimeType};base64,${data}`,
+        imageUrl: imageUrls[0],
+        imageUrls,
         usage: result?.usageMetadata || result?.usage || undefined,
       });
     }
@@ -557,7 +587,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
     // 而 Gemini 的 OpenAI 兼容层通常对未知参数比较敏感，所以我们这里做下区分。
     if (isSeedream3T2IModel(finalModelId)) {
       // 保持现状
-    } else if (isGeminiModel(finalModelId)) {
+    } else if (isGeminiModel(finalModelId, config.provider)) {
       // Gemini 暂时不需要额外的非标参数
     } else {
       payload.output_format = 'png';
@@ -613,20 +643,23 @@ router.post('/generate-image', async (req: Request, res: Response) => {
       return res.status(upstream.status).json({ success: false, error: upstreamMessage });
     }
 
-    const first = Array.isArray(result?.data) ? result.data[0] : null;
-    const imageUrl = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : null);
+    const dataArray = Array.isArray(result?.data) ? result.data : [];
+    const imageUrls = dataArray
+      .map((item: any) => item?.url || (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : null))
+      .filter((u: any) => typeof u === 'string' && u.trim().length > 0) as string[];
 
-    if (!imageUrl) {
+    if (imageUrls.length === 0) {
       console.error('[ImageGen] 未解析到图片 URL:', {
-        firstData: first || null,
+        firstData: dataArray[0] || null,
       });
       return res.status(502).json({ success: false, error: '未从上游返回中解析到图片结果。' });
     }
 
     res.json({
       success: true,
-      imageUrl,
-      images: Array.isArray(result?.data) ? result.data : undefined,
+      imageUrl: imageUrls[0],
+      imageUrls,
+      images: dataArray.length > 0 ? dataArray : undefined,
       usage: result?.usage,
     });
   } catch (error: any) {
@@ -636,7 +669,7 @@ router.post('/generate-image', async (req: Request, res: Response) => {
 });
 
 router.post('/generate-video', async (req: Request, res: Response) => {
-  const { prompt, inputImages, modelId, generateAudio, resolution, ratio, duration } = req.body as {
+  const { prompt, inputImages, modelId, generateAudio, resolution, ratio, duration, videoMode } = req.body as {
     prompt?: string;
     inputImages?: string[];
     modelId?: string;
@@ -644,6 +677,7 @@ router.post('/generate-video', async (req: Request, res: Response) => {
     resolution?: '480p' | '720p' | '1080p';
     ratio?: '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | 'adaptive';
     duration?: number;
+    videoMode?: 'auto' | 'text_to_video' | 'first_frame' | 'first_last_frame' | 'reference_images';
   };
 
   if (!prompt || !String(prompt).trim()) {
@@ -651,7 +685,7 @@ router.post('/generate-video', async (req: Request, res: Response) => {
   }
 
   try {
-    const resolved = await resolveConfigAndModel('video', modelId);
+    const resolved = await resolveConfigAndModel('video', req.user!.id, modelId);
     if ('error' in resolved) {
       return res.status(400).json({ success: false, error: resolved.error });
     }
@@ -666,15 +700,23 @@ router.post('/generate-video', async (req: Request, res: Response) => {
       : [];
 
     const content: any[] = [{ type: 'text', text: String(prompt).trim() }];
-    let mode: 'text' | 'first_frame' | 'first_last_frame' | 'reference_images' = 'text';
-    if (images.length === 1) {
+    let mode: 'text_to_video' | 'first_frame' | 'first_last_frame' | 'reference_images' = 'text_to_video';
+    
+    // 如果用户手动指定了模式且图片数符合基本逻辑，则使用手动模式
+    const effectiveMode = videoMode && videoMode !== 'auto' ? videoMode : null;
+
+    if (effectiveMode === 'text_to_video' || (!effectiveMode && images.length === 0)) {
+      mode = 'text_to_video';
+    } else if (effectiveMode === 'first_frame' || (!effectiveMode && images.length === 1)) {
       mode = 'first_frame';
-      content.push({ type: 'image_url', image_url: { url: images[0] } });
-    } else if (images.length === 2) {
+      if (images.length >= 1) {
+        content.push({ type: 'image_url', image_url: { url: images[0] } });
+      }
+    } else if (effectiveMode === 'first_last_frame' || (!effectiveMode && images.length === 2)) {
       mode = 'first_last_frame';
-      content.push({ type: 'image_url', role: 'first_frame', image_url: { url: images[0] } });
-      content.push({ type: 'image_url', role: 'last_frame', image_url: { url: images[1] } });
-    } else if (images.length > 2) {
+      if (images.length >= 1) content.push({ type: 'image_url', role: 'first_frame', image_url: { url: images[0] } });
+      if (images.length >= 2) content.push({ type: 'image_url', role: 'last_frame', image_url: { url: images[1] } });
+    } else {
       mode = 'reference_images';
       images.forEach((url) => {
         content.push({ type: 'image_url', role: 'reference_image', image_url: { url } });
@@ -741,7 +783,7 @@ router.get('/generate-video/task/:taskId', async (req: Request, res: Response) =
   try {
     let config = videoTaskConfigMap.get(taskId);
     if (!config) {
-      const resolved = await resolveConfigAndModel('video', modelId);
+      const resolved = await resolveConfigAndModel('video', req.user!.id, modelId);
       if ('error' in resolved) {
         return res.status(400).json({ success: false, error: resolved.error });
       }

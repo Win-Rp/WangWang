@@ -1,9 +1,12 @@
 import express, { type Request, type Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.ts';
+import { requireAuth } from '../middleware/auth.ts';
 
 const router = express.Router();
 const normalizeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/+$/, '');
+
+router.use(requireAuth);
 
 type ConfigRow = {
   id: string;
@@ -27,10 +30,11 @@ router.get('/apis', (req: Request, res: Response) => {
       )) as models
     FROM api_configs ac
     LEFT JOIN models m ON ac.id = m.api_config_id
+    WHERE ac.user_id = ?
     GROUP BY ac.id
   `;
   
-  db.all(sql, [], (err, rows: any[]) => {
+  db.all(sql, [req.user!.id], (err, rows: any[]) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -49,11 +53,11 @@ router.post('/apis', (req: Request, res: Response) => {
   const configId = uuidv4();
   
   const insertConfigSql = `
-    INSERT INTO api_configs (id, category, provider, base_url, api_key, is_verified)
-    VALUES (?, ?, ?, ?, ?, 0)
+    INSERT INTO api_configs (id, user_id, category, provider, base_url, api_key, is_verified)
+    VALUES (?, ?, ?, ?, ?, ?, 0)
   `;
   
-  db.run(insertConfigSql, [configId, category, provider, base_url, api_key], function(err) {
+  db.run(insertConfigSql, [configId, req.user!.id, category, provider, base_url, api_key], function(err) {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -103,12 +107,12 @@ router.post('/apis/:id/test', async (req: Request, res: Response) => {
       m.model_id
     FROM api_configs ac
     LEFT JOIN models m ON ac.id = m.api_config_id
-    WHERE ac.id = ?
+    WHERE ac.id = ? AND ac.user_id = ?
   `;
 
   try {
     const rows = await new Promise<ConfigRow[]>((resolve, reject) => {
-      db.all(sql, [id], (err, resultRows?: ConfigRow[]) => {
+      db.all(sql, [id, req.user!.id], (err, resultRows?: ConfigRow[]) => {
         if (err) {
           reject(err);
           return;
@@ -149,13 +153,14 @@ router.post('/apis/:id/test', async (req: Request, res: Response) => {
     const updateSql = isSuccess 
       ? `UPDATE api_configs 
          SET is_verified = 1 
-         WHERE id = ? 
-         OR (provider = ? AND base_url = ? AND api_key = ?)`
-      : `UPDATE api_configs SET is_verified = 0 WHERE id = ?`;
+         WHERE user_id = ?
+         AND (id = ? 
+           OR (provider = ? AND base_url = ? AND api_key = ?))`
+      : `UPDATE api_configs SET is_verified = 0 WHERE user_id = ? AND id = ?`;
     
     const updateParams = isSuccess 
-      ? [id, config.provider, config.base_url, config.api_key]
-      : [id];
+      ? [req.user!.id, id, config.provider, config.base_url, config.api_key]
+      : [req.user!.id, id];
 
     db.run(updateSql, updateParams, (err) => {
       if (err) {
@@ -195,11 +200,11 @@ router.post('/apis/:id/test', async (req: Request, res: Response) => {
 // Fetch model list from upstream provider
 router.get('/apis/:id/models/fetch', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const sql = 'SELECT base_url, api_key FROM api_configs WHERE id = ?';
+  const sql = 'SELECT base_url, api_key FROM api_configs WHERE id = ? AND user_id = ?';
 
   try {
     const config = await new Promise<any>((resolve, reject) => {
-      db.get(sql, [id], (err, row) => {
+      db.get(sql, [id, req.user!.id], (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });
@@ -242,7 +247,7 @@ router.put('/apis/:id', (req: Request, res: Response) => {
   const { category, provider, base_url, api_key, models } = req.body;
   
   // First, get the current config to see if URL or Key changed
-  db.get('SELECT base_url, api_key, is_verified FROM api_configs WHERE id = ?', [id], (err, currentConfig: any) => {
+  db.get('SELECT base_url, api_key, is_verified FROM api_configs WHERE id = ? AND user_id = ?', [id, req.user!.id], (err, currentConfig: any) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!currentConfig) return res.status(404).json({ error: 'Config not found' });
 
@@ -254,10 +259,10 @@ router.put('/apis/:id', (req: Request, res: Response) => {
     const updateConfigSql = `
       UPDATE api_configs 
       SET category = ?, provider = ?, base_url = ?, api_key = ?, is_verified = ?
-      WHERE id = ?
+      WHERE id = ? AND user_id = ?
     `;
     
-    db.run(updateConfigSql, [category, provider, base_url, api_key, isVerified, id], function(err) {
+    db.run(updateConfigSql, [category, provider, base_url, api_key, isVerified, id, req.user!.id], function(err) {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -303,8 +308,9 @@ router.put('/apis/:id', (req: Request, res: Response) => {
 // Delete API config
 router.delete('/apis/:id', (req: Request, res: Response) => {
   const { id } = req.params;
-  db.run('DELETE FROM api_configs WHERE id = ?', [id], function(err) {
+  db.run('DELETE FROM api_configs WHERE id = ? AND user_id = ?', [id, req.user!.id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
+    if ((this as any).changes === 0) return res.status(404).json({ error: 'Config not found' });
     db.run('DELETE FROM models WHERE api_config_id = ?', [id], (_err) => {
       if (_err) return res.status(500).json({ error: _err.message });
       res.json({ message: 'API config deleted successfully' });

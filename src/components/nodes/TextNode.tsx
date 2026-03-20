@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Handle, Position, NodeProps, useReactFlow, NodeResizer, useEdges, useNodes } from '@xyflow/react';
 import { Sparkles, Check, Globe, Trash2, User, Star, Image as ImageIcon } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface TextNodeData {
   label: string;
@@ -71,7 +72,10 @@ export default function TextNode({ data, id, selected }: NodeProps) {
     return upstreamImageNodes
       .map((node: any) => ({
         id: node?.id as string,
-        url: (node?.data?.imageUrl as string | undefined) || null
+        url:
+          (Array.isArray(node?.data?.imageUrls) && node.data.imageUrls.length > 0
+            ? (node.data.imageUrls[0] as string)
+            : (node?.data?.imageUrl as string | undefined)) || null
       }))
       .filter((n: any) => !!n.id);
   }, [upstreamImageNodes]);
@@ -108,7 +112,7 @@ export default function TextNode({ data, id, selected }: NodeProps) {
     const fetchData = async () => {
       try {
         // Fetch Models
-        const modelRes = await fetch('/api/settings/apis');
+        const modelRes = await apiFetch('/api/settings/apis');
         const modelJson = await modelRes.json();
         const textConfigs = modelJson.data.filter((c: any) => c.category === 'text');
         const availableModels: {id: string, name: string}[] = [];
@@ -129,14 +133,14 @@ export default function TextNode({ data, id, selected }: NodeProps) {
         }
 
         // Fetch Agents
-        const agentRes = await fetch('/api/agents');
+        const agentRes = await apiFetch('/api/agents');
         const agentJson = await agentRes.json();
         if (agentJson.success) {
           setAgents(agentJson.data);
         }
 
         // Fetch Skills
-        const skillRes = await fetch('/api/skills');
+        const skillRes = await apiFetch('/api/skills');
         const skillJson = await skillRes.json();
         if (skillJson.success) {
           setSkills(skillJson.data);
@@ -159,20 +163,6 @@ export default function TextNode({ data, id, selected }: NodeProps) {
       return node;
     }));
   };
-
-  const autoResizeTextarea = (el: HTMLTextAreaElement | null) => {
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  };
-
-  useEffect(() => {
-    autoResizeTextarea(contentTextareaRef.current);
-  }, [content]);
-
-  useEffect(() => {
-    autoResizeTextarea(promptTextareaRef.current);
-  }, [prompt, selected]);
 
   useEffect(() => {
     if (selectedAgentId && selectedSkillId) {
@@ -251,15 +241,20 @@ export default function TextNode({ data, id, selected }: NodeProps) {
     
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/ai/generate-text', {
+      const res = await apiFetch('/api/ai/generate-text', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
           modelId: selectedModel,
           useNetworking: isNetworking,
           systemPrompt: selectedSkill?.content ?? selectedAgent?.system_prompt,
-          inputImages: referenceImages.map(img => img.url).filter(Boolean)
+          inputImages: upstreamImageNodes
+            .flatMap((n: any) => {
+              const urls = Array.isArray(n?.data?.imageUrls) ? n.data.imageUrls : [];
+              const single = typeof n?.data?.imageUrl === 'string' ? [n.data.imageUrl] : [];
+              return urls.length > 0 ? urls : single;
+            })
+            .filter((u: any) => typeof u === 'string' && u.trim().length > 0)
         })
       });
       
@@ -283,9 +278,10 @@ export default function TextNode({ data, id, selected }: NodeProps) {
   const currentModelName = models.find(m => m.id === selectedModel)?.name || '选择模型';
   const currentAgentName = agents.find(a => a.id === selectedAgentId)?.name || '选择智能体';
   const currentSkillName = skills.find(s => s.id === selectedSkillId)?.name || '选择技能';
+  const generating = isGenerating || !!(nodeData as any).isGenerating;
 
   return (
-    <div className={`bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[200px] min-h-[150px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${isGenerating ? 'animate-flowline' : ''}`}>
+    <div className={`bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[200px] min-h-[150px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${generating ? 'animate-flowline' : ''}`}>
       
       <NodeResizer minWidth={200} minHeight={150} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
 
@@ -312,8 +308,8 @@ export default function TextNode({ data, id, selected }: NodeProps) {
       </div>
 
       {/* Reference Images Area (Mirrors ImageGenNode) */}
-      <div className="bg-[#0f0f0f] border-b border-gray-800 px-3 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar relative min-h-[44px]">
-          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+      <div className="bg-[#0f0f0f] border-b border-gray-800 px-3 py-2 flex items-center gap-2 relative min-h-[44px]">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-x-auto no-scrollbar">
             {referenceImages.length > 0 ? (
               referenceImages.map((img) => (
                 <div
@@ -338,7 +334,7 @@ export default function TextNode({ data, id, selected }: NodeProps) {
             position={Position.Left} 
             id="images" 
             className="w-4 h-4 bg-purple-500 z-50" 
-            style={{ top: 22, left: -6 }} 
+            style={{ top: 22, left: 0 }} 
           />
       </div>
 
@@ -352,12 +348,19 @@ export default function TextNode({ data, id, selected }: NodeProps) {
           onChange={handleContentChange}
           onCompositionStart={handleCompositionStart}
           onCompositionEnd={(e) => handleCompositionEnd(e, 'content')}
-          style={{ overflow: 'hidden', overflowWrap: 'anywhere', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
+          style={{
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            maxWidth: '100%',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+          }}
         />
       </div>
 
       {/* AI Controls (Visible when selected) */}
-      {selected && (
+      {false && (
         <div className="p-3 bg-gray-900 rounded-b-lg border-t border-gray-800">
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col gap-3 shadow-sm">
             {/* Top: Prompt Input */}
@@ -369,7 +372,14 @@ export default function TextNode({ data, id, selected }: NodeProps) {
               onChange={handlePromptChange}
               onCompositionStart={handleCompositionStart}
               onCompositionEnd={(e) => handleCompositionEnd(e, 'prompt')}
-              style={{ overflow: 'hidden', overflowWrap: 'anywhere', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
+              style={{
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                maxWidth: '100%',
+                overflowWrap: 'anywhere',
+                wordBreak: 'break-word',
+                whiteSpace: 'pre-wrap',
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();

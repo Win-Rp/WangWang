@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Handle, NodeProps, Position, useEdges, useNodes, useReactFlow, NodeResizer } from '@xyflow/react';
 import { Check, Image as ImageIcon, Monitor, Smartphone, SlidersHorizontal, Sparkles, Square, LayoutTemplate, X, Trash2 } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 const ASPECT_RATIOS = [
   { label: '1:1', value: '1:1', icon: Square },
@@ -26,6 +27,7 @@ interface ImageGenNodeData {
   quality?: ImageQuality;
   aspectRatio?: string;
   generatedImage?: string | null;
+  generatedImages?: string[];
 }
 
 type PromptSegment =
@@ -45,6 +47,14 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(nodeData.generatedImage || null);
+  const [generatedImages, setGeneratedImages] = useState<string[]>(
+    Array.isArray(nodeData.generatedImages)
+      ? nodeData.generatedImages
+      : nodeData.generatedImage
+        ? [nodeData.generatedImage]
+        : [],
+  );
+  const [activeGeneratedIndex, setActiveGeneratedIndex] = useState(0);
   const settingsRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const promptEditorRef = useRef<HTMLDivElement>(null);
@@ -95,11 +105,12 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
 
     // Sort image nodes by Y position to maintain consistent order
     imageNodes.sort((a, b) => a.position.y - b.position.y);
+    const byId = new Map(nodes.map((n) => [n.id, n] as const));
 
     return {
       upstreamTextNode: textNodes[0] || null,
       upstreamImageNodes: imageNodes,
-      hasOutputConnection: edges.some(e => e.source === id && e.sourceHandle === 'output')
+      hasOutputConnection: edges.some((e) => e.source === id && e.sourceHandle === 'output' && byId.get(e.target)?.type === 'image'),
     };
   }, [edges, id, nodes]);
 
@@ -139,7 +150,31 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
 
     const nextGenerated = nodeData.generatedImage || null;
     if (nextGenerated !== generatedImage) setGeneratedImage(nextGenerated);
-  }, [nodeData.prompt, nodeData.modelId, nodeData.quality, nodeData.aspectRatio, nodeData.generatedImage, upstreamTextNode, prompt, selectedModel, quality, aspectRatio, generatedImage]);
+
+    const nextGeneratedImages = Array.isArray(nodeData.generatedImages)
+      ? nodeData.generatedImages
+      : nextGenerated
+        ? [nextGenerated]
+        : [];
+    if (JSON.stringify(nextGeneratedImages) !== JSON.stringify(generatedImages)) {
+      setGeneratedImages(nextGeneratedImages);
+      setActiveGeneratedIndex(0);
+    }
+  }, [
+    nodeData.prompt,
+    nodeData.modelId,
+    nodeData.quality,
+    nodeData.aspectRatio,
+    nodeData.generatedImage,
+    nodeData.generatedImages,
+    upstreamTextNode,
+    prompt,
+    selectedModel,
+    quality,
+    aspectRatio,
+    generatedImage,
+    generatedImages,
+  ]);
 
   useEffect(() => {
     if (upstreamTextNode) return;
@@ -165,7 +200,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const res = await fetch('/api/settings/apis');
+        const res = await apiFetch('/api/settings/apis');
         const json = await res.json();
         const configs = Array.isArray(json.data) ? json.data : [];
         const imageConfigs = configs.filter((c: any) => c.category === 'image');
@@ -200,8 +235,32 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   }, [selected, selectedModel]);
 
   const currentModelName = models.find((m) => m.id === selectedModel)?.name || '选择模型';
+  const generating = isGenerating || !!(nodeData as any).isGenerating;
+
+  const propagateToConnectedImageNodes = (urls: string[], primaryUrl: string) => {
+    const outputEdges = edges.filter((e) => e.source === id);
+    if (outputEdges.length === 0) return;
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    outputEdges.forEach((edge) => {
+      const targetNode = byId.get(edge.target);
+      if (targetNode && targetNode.type === 'image') {
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id === targetNode.id) {
+              return { ...n, data: { ...n.data, imageUrl: primaryUrl, imageUrls: urls } };
+            }
+            return n;
+          }),
+        );
+      }
+    });
+  };
 
   const handleGenerate = async () => {
+    if (!hasOutputConnection) {
+      alert('请先将输出端口连接到图片节点后再生成。');
+      return;
+    }
     setIsGenerating(true);
     try {
       // Process prompt: Replace image tokens with their labels (e.g., 图片1)
@@ -213,12 +272,17 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
          }).join('');
       }
 
-      const response = await fetch('/api/ai/generate-image', {
+      const response = await apiFetch('/api/ai/generate-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: upstreamTextNode ? (upstreamTextNode.data.content as string) : processedPrompt,
-          inputImages: upstreamImageNodes.map(n => n?.data.imageUrl).filter(Boolean),
+          inputImages: upstreamImageNodes
+            .flatMap((n: any) => {
+              const urls = Array.isArray(n?.data?.imageUrls) ? n.data.imageUrls : [];
+              const single = typeof n?.data?.imageUrl === 'string' ? [n.data.imageUrl] : [];
+              return urls.length > 0 ? urls : single;
+            })
+            .filter((u: any) => typeof u === 'string' && u.trim().length > 0),
           modelId: selectedModel,
           quality,
           aspectRatio
@@ -234,25 +298,19 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
       
       const result = await response.json();
       console.log('[ImageGenNode] 接口返回:', result);
-      if (result.success && result.imageUrl) {
-        setGeneratedImage(result.imageUrl);
-        updateNodeData({ generatedImage: result.imageUrl });
+      const urls = Array.isArray(result?.imageUrls)
+        ? result.imageUrls
+        : result?.imageUrl
+          ? [result.imageUrl]
+          : [];
+
+      if (result.success && urls.length > 0) {
+        setGeneratedImages(urls);
+        setActiveGeneratedIndex(0);
+        setGeneratedImage(urls[0]);
+        updateNodeData({ generatedImage: urls[0], generatedImages: urls });
         
-        // Propagate to connected image nodes
-        const outputEdges = edges.filter(e => e.source === id);
-        const byId = new Map(nodes.map(n => [n.id, n]));
-        
-        outputEdges.forEach(edge => {
-            const targetNode = byId.get(edge.target);
-            if (targetNode && targetNode.type === 'image') {
-                setNodes(nds => nds.map(n => {
-                    if (n.id === targetNode.id) {
-                        return { ...n, data: { ...n.data, imageUrl: result.imageUrl } };
-                    }
-                    return n;
-                }));
-            }
-        });
+        propagateToConnectedImageNodes(urls, urls[0]);
 
       } else {
         alert('生成失败: ' + (result.error || '未知错误'));
@@ -269,7 +327,10 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
     return upstreamImageNodes
       .map((node: any) => ({
         id: node?.id as string,
-        url: (node?.data?.imageUrl as string | undefined) || null
+        url:
+          (Array.isArray(node?.data?.imageUrls) && node.data.imageUrls.length > 0
+            ? (node.data.imageUrls[0] as string)
+            : (node?.data?.imageUrl as string | undefined)) || null
       }))
       .filter((n: any) => !!n.id);
   }, [upstreamImageNodes]);
@@ -563,7 +624,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[320px] min-h-[200px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${isGenerating ? 'animate-flowline' : ''}`}>
+    <div className={`relative bg-gray-900 border-2 rounded-lg shadow-xl w-full h-full min-w-[320px] min-h-[140px] transition-all flex flex-col ${selected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-gray-700'} ${generating ? 'animate-flowline' : ''}`}>
       
       {/* Header */}
       <div className="bg-gray-800 px-3 py-2 rounded-t-lg flex items-center justify-between border-b border-gray-700 group/header">
@@ -587,7 +648,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
         <Handle type="source" position={Position.Right} id="output" className="w-3 h-3 bg-purple-500 z-50" />
       </div>
 
-      <NodeResizer minWidth={300} minHeight={200} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
+      <NodeResizer minWidth={300} minHeight={140} isVisible={selected} lineClassName="border-blue-500" handleClassName="h-3 w-3 bg-white border-2 border-blue-500 rounded" />
 
       {/* Input Images (Top) */}
       <div className="p-3 border-b border-gray-800">
@@ -601,39 +662,7 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
               referenceImages.map((node) => (
                 <div 
                   key={node.id} 
-                  className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
-                  onClick={() => {
-                    // Insert reference to prompt editor
-                    const token = {
-                      id: node.id,
-                      label: `图片${referenceImages.findIndex(n => n.id === node.id) + 1}`,
-                      url: node.url
-                    };
-                    
-                    // Append to end if no selection
-                    const editor = promptEditorRef.current;
-                    if (editor) {
-                       const segments = readSegmentsFromEditor();
-                       const newSegments = [...segments, { t: 'text' as const, v: ' ' }, { t: 'img' as const, id: token.id, label: token.label, url: token.url }];
-                       const plain = segmentsToPlainText(newSegments);
-                       setPromptRich(newSegments);
-                       setPrompt(plain);
-                       updateNodeData({ prompt: plain, promptRich: newSegments });
-                       
-                       // Focus editor
-                       setTimeout(() => {
-                           editor.focus();
-                           // Move caret to end
-                           const range = document.createRange();
-                           range.selectNodeContents(editor);
-                           range.collapse(false);
-                           const sel = window.getSelection();
-                           sel?.removeAllRanges();
-                           sel?.addRange(range);
-                       }, 0);
-                    }
-                  }}
-                  title="点击插入到提示词"
+                  className="w-12 h-12 flex-shrink-0 rounded overflow-hidden border border-gray-800 bg-gray-900 transition-all"
                 >
                   {node.url ? (
                     <img src={node.url} alt="Input" className="w-full h-full object-contain" />
@@ -649,271 +678,19 @@ export default function ImageGenNode({ data, id, selected }: NodeProps) {
             )}
           </div>
 
-          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-purple-500 z-50" style={{ top: 44, left: -6 }} />
+          <Handle type="target" position={Position.Left} id="images" className="w-4 h-4 bg-purple-500 z-50" style={{ top: 44, left: 0 }} />
           <Handle type="target" position={Position.Left} id="image-input" className="w-4 h-4 bg-purple-500 opacity-0 pointer-events-none" style={{ top: 44, left: -6 }} />
         </div>
       </div>
 
-      {/* Generated Preview (Middle) */}
-      {!hasOutputConnection && (
-      <div
-        className="relative bg-black flex items-center justify-center overflow-hidden border-b border-gray-800 group/preview flex-1 min-h-0"
-      >
-        {generatedImage ? (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <img src={generatedImage} alt="Generated" className="w-full h-full object-contain" />
-            </div>
-        ) : (
-            <div className="text-gray-600 flex flex-col items-center">
-                <Sparkles size={24} className="mb-2 opacity-20" />
-                <span className="text-xs">等待生成</span>
-            </div>
-        )}
-        
-        {/* Loading Overlay */}
-        {isGenerating && (
-            <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-sm">
-                <div className="flex flex-col items-center">
-                    <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                    <span className="text-xs text-blue-400 font-medium">生成中...</span>
-                </div>
-            </div>
-        )}
+      <div className="px-3 py-2 border-b border-gray-800 bg-gray-950/40 text-[11px] text-gray-500">
+        {hasOutputConnection ? '已连接输出：生成结果将推送到下游图片节点。' : '未连接输出：请先将输出端口连接到图片节点后再生成。'}
       </div>
-      )}
-      
-      {/* Loading Overlay (When preview is hidden) */}
-      {hasOutputConnection && isGenerating && (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm rounded-lg">
-              <div className="flex flex-col items-center">
-                  <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                  <span className="text-xs text-blue-400 font-medium">生成中...</span>
-              </div>
-          </div>
-      )}
-
-      {/* Prompt + Toolbar (Bottom) */}
-      <div className="p-3 bg-gray-900 rounded-b-lg">
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col gap-2 shadow-sm relative">
-          {upstreamTextNode ? (
-            <div className="text-gray-400 text-sm">
-              <div className="text-xs italic">提示词由上游节点提供</div>
-              <div className="mt-1 text-gray-500 text-xs truncate">{(upstreamTextNode.data.content as string) || '...'}</div>
-            </div>
-          ) : (
-            <div
-              ref={promptEditorRef}
-              className="nodrag w-full min-w-0 bg-transparent text-gray-200 text-sm placeholder-gray-500 outline-none min-h-16 leading-relaxed whitespace-pre-wrap break-words"
-              style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
-              contentEditable
-              suppressContentEditableWarning
-              onFocus={() => {
-                const editor = promptEditorRef.current;
-                if (!editor) return;
-                if (!promptRich) {
-                  editor.innerHTML = segmentsToHtml([{ t: 'text', v: prompt }]);
-                } else {
-                  editor.innerHTML = segmentsToHtml(promptRich);
-                }
-              }}
-              onInput={() => {
-                const segments = readSegmentsFromEditor();
-                const plain = segmentsToPlainText(segments);
-                setPromptRich(segments);
-                setPrompt(plain);
-                if (!isComposing.current) {
-                  updateNodeData({ prompt: plain, promptRich: segments });
-                }
-                updateMentionStateFromEditor(segments);
-              }}
-              onCompositionStart={() => {
-                isComposing.current = true;
-              }}
-              onCompositionEnd={() => {
-                isComposing.current = false;
-                const segments = readSegmentsFromEditor();
-                const plain = segmentsToPlainText(segments);
-                updateNodeData({ prompt: plain, promptRich: segments });
-              }}
-              onKeyDown={(e) => {
-                if (!mentionState) {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleGenerate();
-                  }
-                  return;
-                }
-
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  setMentionState((s) => (s ? { ...s, activeIndex: Math.min(s.activeIndex + 1, Math.max(filteredMentionCandidates.length - 1, 0)) } : s));
-                  return;
-                }
-
-                if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  setMentionState((s) => (s ? { ...s, activeIndex: Math.max(s.activeIndex - 1, 0) } : s));
-                  return;
-                }
-
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setMentionState(null);
-                  return;
-                }
-
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const active = filteredMentionCandidates[Math.min(mentionState.activeIndex, filteredMentionCandidates.length - 1)];
-                  if (active) {
-                    replaceOffsetsWithToken(mentionState.startOffset, mentionState.endOffset, {
-                      id: active.id,
-                      label: active.label,
-                      url: active.url,
-                    });
-                    setMentionState(null);
-                  }
-                  return;
-                }
-              }}
-              data-placeholder="输入生成提示词，使用 @ 引用参考图…"
-            />
-          )}
-
-          {mentionState && !upstreamTextNode && filteredMentionCandidates.length > 0 && (
-            <div className="absolute left-3 right-3 bottom-[44px] bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-h-40 overflow-y-auto z-50">
-              {filteredMentionCandidates.map((c, idx) => (
-                <button
-                  key={c.id}
-                  onMouseEnter={() => setMentionState((s) => (s ? { ...s, activeIndex: idx } : s))}
-                  onClick={() => {
-                    const s = mentionState;
-                    if (!s) return;
-                    replaceOffsetsWithToken(s.startOffset, s.endOffset, { id: c.id, label: c.label, url: c.url });
-                    setMentionState(null);
-                  }}
-                  className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors ${mentionState.activeIndex === idx ? 'bg-gray-800' : 'hover:bg-gray-800'} text-gray-200`}
-                >
-                  <div className="w-8 h-8 rounded bg-gray-800 border border-gray-700 overflow-hidden flex-shrink-0">
-                    {c.url ? <img src={c.url} alt={c.label} className="w-full h-full object-contain" /> : null}
-                  </div>
-                  <span>{c.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="relative" ref={modelMenuRef}>
-                <button
-                  onClick={() => setIsModelMenuOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 transition-colors group"
-                  title="选择模型"
-                >
-                  <Sparkles size={12} className="text-gray-500 group-hover:text-gray-300" />
-                  <span className="max-w-28 truncate">{currentModelName}</span>
-                </button>
-
-                {isModelMenuOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-56 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto">
-                    {models.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => {
-                          setSelectedModel(m.id);
-                          setIsModelMenuOpen(false);
-                          updateNodeData({ modelId: m.id });
-                        }}
-                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-gray-800 transition-colors ${selectedModel === m.id ? 'bg-gray-800/50 text-blue-400' : 'text-gray-200'}`}
-                      >
-                        <span className="truncate">{m.name}</span>
-                        {selectedModel === m.id && <Check size={12} />}
-                      </button>
-                    ))}
-                    {models.length === 0 && (
-                      <div className="px-3 py-2 text-xs text-gray-500">无可用模型</div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="relative" ref={settingsRef}>
-                <button
-                  onClick={() => setIsSettingsOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 transition-colors group"
-                  title="画质与比例"
-                >
-                  <SlidersHorizontal size={12} className="text-gray-500 group-hover:text-gray-300" />
-                  <span>{quality} · {aspectRatio}</span>
-                </button>
-
-                {isSettingsOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-72 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl z-50 p-4 text-gray-200">
-                    <div className="flex justify-between items-center mb-3">
-                      <span className="font-medium text-sm">画质与比例</span>
-                      <button onClick={() => setIsSettingsOpen(false)} className="text-gray-500 hover:text-white">
-                        <X size={14} />
-                      </button>
-                    </div>
-
-                    <div className="mb-4">
-                      <label className="text-xs text-gray-400 mb-2 block">画质</label>
-                      <div className="flex bg-gray-800 p-1 rounded-lg">
-                        {(['1K', '2K', '3K'] as ImageQuality[]).map((q) => (
-                          <button
-                            key={q}
-                            onClick={() => {
-                              setQuality(q);
-                              updateNodeData({ quality: q });
-                            }}
-                            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${quality === q ? 'bg-gray-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-300'}`}
-                          >
-                            {q}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-gray-400 mb-2 block">比例</label>
-                      <div className="grid grid-cols-4 gap-2">
-                        {ASPECT_RATIOS.map((ratio) => (
-                          <button
-                            key={ratio.value}
-                            onClick={() => {
-                              setAspectRatio(ratio.value);
-                              updateNodeData({ aspectRatio: ratio.value });
-                            }}
-                            className={`flex flex-col items-center justify-center p-2 rounded-lg border transition-all ${aspectRatio === ratio.value ? 'bg-gray-700 border-blue-500 text-white' : 'border-gray-800 bg-gray-800/50 text-gray-400 hover:bg-gray-700'}`}
-                          >
-                            <ratio.icon size={14} className="mb-1" />
-                            <span className="text-[10px]">{ratio.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating || (!prompt && !upstreamTextNode)}
-              className={`p-1.5 rounded hover:bg-gray-700 text-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isGenerating ? 'animate-pulse' : ''}`}
-              title="生成图片"
-            >
-              <Sparkles size={16} />
-            </button>
-          </div>
-        </div>
 
         <Handle type="target" position={Position.Left} className="w-4 h-4 bg-blue-500 opacity-0 pointer-events-none" style={{ top: '50%', left: -6 }} />
         <Handle type="target" position={Position.Left} id="prompt-area" className="bg-blue-500 opacity-0 z-40" style={{ width: 44, height: 44, borderRadius: 9999, top: '84%', left: -22 }} />
-        <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500 z-50" style={{ top: '86%', left: -6 }} />
+        <Handle type="target" position={Position.Left} id="prompt" className="w-4 h-4 bg-blue-500 z-50" style={{ top: '86%', left: 0 }} />
         <Handle type="target" position={Position.Left} id="text-input" className="w-4 h-4 bg-blue-500 opacity-0 pointer-events-none" style={{ top: '86%', left: -6 }} />
       </div>
-    </div>
   );
 }

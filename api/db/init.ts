@@ -2,8 +2,25 @@ import db from './index.ts';
 
 export const initDb = () => {
   const queries = [
+    `CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      password_iters INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )`,
     `CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       name TEXT NOT NULL,
       canvas_data TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -29,13 +46,15 @@ export const initDb = () => {
     )`,
     `CREATE TABLE IF NOT EXISTS api_configs (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       category TEXT NOT NULL,
       provider TEXT NOT NULL,
       base_url TEXT NOT NULL,
       api_key TEXT NOT NULL,
       is_active BOOLEAN DEFAULT 1,
       is_verified BOOLEAN DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )`,
     `CREATE TABLE IF NOT EXISTS models (
       id TEXT PRIMARY KEY,
@@ -47,17 +66,21 @@ export const initDb = () => {
     )`,
     `CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       name TEXT NOT NULL,
       system_prompt TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )`,
     `CREATE TABLE IF NOT EXISTS skills (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       name TEXT NOT NULL,
       content TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )`
   ];
 
@@ -70,7 +93,7 @@ export const initDb = () => {
       });
     });
 
-    // Simple migration: Add is_verified column if it doesn't exist
+    // Simple migrations: Add missing columns if they don't exist
     db.run(`ALTER TABLE api_configs ADD COLUMN is_verified BOOLEAN DEFAULT 0`, (err) => {
       if (err) {
         if (err.message.includes('duplicate column name')) {
@@ -80,6 +103,42 @@ export const initDb = () => {
         }
       } else {
         console.log('Migration: is_verified column added to api_configs.');
+      }
+    });
+
+    db.run(`ALTER TABLE projects ADD COLUMN user_id TEXT`, (err) => {
+      if (err) {
+        if (err.message.includes('duplicate column name')) {
+        } else {
+          console.error('Migration error:', err.message);
+        }
+      }
+    });
+
+    db.run(`ALTER TABLE agents ADD COLUMN user_id TEXT`, (err) => {
+      if (err) {
+        if (err.message.includes('duplicate column name')) {
+        } else {
+          console.error('Migration error:', err.message);
+        }
+      }
+    });
+
+    db.run(`ALTER TABLE skills ADD COLUMN user_id TEXT`, (err) => {
+      if (err) {
+        if (err.message.includes('duplicate column name')) {
+        } else {
+          console.error('Migration error:', err.message);
+        }
+      }
+    });
+
+    db.run(`ALTER TABLE api_configs ADD COLUMN user_id TEXT`, (err) => {
+      if (err) {
+        if (err.message.includes('duplicate column name')) {
+        } else {
+          console.error('Migration error:', err.message);
+        }
       }
     });
   });

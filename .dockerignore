@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+.trae
+.vscode
+.idea
+.DS_Store
+.git
+.gitignore
+README.md
+Dockerfile
+docker-compose.yml

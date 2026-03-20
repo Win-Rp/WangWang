@@ -14,6 +14,7 @@ import {
   X,
   Wand2
 } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 interface StoryboardShot {
   id: string;
@@ -70,7 +71,7 @@ export default function StoryboardNode({ data, id, selected }: NodeProps) {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const res = await fetch('/api/settings/apis');
+        const res = await apiFetch('/api/settings/apis');
         const json = await res.json();
         const configs = Array.isArray(json.data) ? json.data : [];
         
@@ -151,9 +152,8 @@ export default function StoryboardNode({ data, id, selected }: NodeProps) {
         ? `${nodeData.globalStyle}, ${shot.prompt}` 
         : shot.prompt;
 
-      const response = await fetch('/api/ai/generate-image', {
+      const response = await apiFetch('/api/ai/generate-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: fullPrompt,
           modelId: selectedImageModel,
@@ -191,9 +191,8 @@ export default function StoryboardNode({ data, id, selected }: NodeProps) {
 
     setIsDecomposing(true);
     try {
-      const response = await fetch('/api/ai/decompose-script', {
+      const response = await apiFetch('/api/ai/decompose-script', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           script: incomingText,
           modelId: selectedTextModel
@@ -413,7 +412,7 @@ export default function StoryboardNode({ data, id, selected }: NodeProps) {
                   value={shot.prompt}
                   onChange={(e) => updateShot(shot.id, { prompt: e.target.value })}
                   placeholder="镜头提示词..."
-                  className="w-full h-16 bg-transparent text-gray-200 text-xs resize-none outline-none border-none p-0 placeholder-gray-600"
+                  className="w-full h-16 bg-transparent text-gray-200 text-xs resize-none outline-none border-none p-0 placeholder-gray-600 overflow-y-auto"
                 />
                 <div className="flex items-center justify-between pt-1 border-t border-gray-700/50">
                   <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
