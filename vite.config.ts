@@ -26,6 +26,7 @@ export default defineConfig({
   ],
   server: {
     host: true,
+    allowedHosts: ['w.mxitx.com'],
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
