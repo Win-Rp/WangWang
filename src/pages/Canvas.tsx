@@ -134,12 +134,34 @@ function CanvasContent() {
     navigate('/login');
    }, [logout, navigate]);
 
-   const [projectId, setProjectId] = useState<string | null>(null);
-   const [projectName, setProjectName] = useState<string>('My Project');
-   const [isAssetManagerOpen, setIsAssetManagerOpen] = useState(false);
-   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string>('My Project');
+  const [isAssetManagerOpen, setIsAssetManagerOpen] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
 
-   const isHydratingRef = useRef(false);
+  // Handle Space key for panning
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        if (!isSpacePressed) setIsSpacePressed(true);
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpacePressed(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isSpacePressed]);
+
+  const isHydratingRef = useRef(false);
    const hasLoadedRef = useRef(false);
    const saveTimerRef = useRef<number | null>(null);
    const savingRef = useRef(false);
@@ -418,25 +440,6 @@ function CanvasContent() {
     setSelectedNodeId(params.nodes?.[0]?.id || null);
   }, []);
 
-  // Double click to open menu
-  const onPaneDoubleClick = useCallback(
-    (event: React.MouseEvent) => {
-      // Prevent default behavior to stop zooming
-      event.preventDefault();
-      
-      const pane = reactFlowWrapper.current?.getBoundingClientRect();
-      if (pane) {
-        setMenu({
-          x: event.clientX - pane.left,
-          y: event.clientY - pane.top,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        });
-      }
-    },
-    []
-  );
-
   const onPaneContextMenu = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
@@ -653,10 +656,8 @@ function CanvasContent() {
 
       {/* Canvas Area */}
       <div 
-        className="flex-1 relative" 
+        className="flex-1 relative overflow-hidden min-h-0" 
         ref={reactFlowWrapper} 
-        style={{ height: 'calc(100vh - 3.5rem)' }}
-        onDoubleClick={onPaneDoubleClick}
         onDragOver={(e) => {
           if (e.dataTransfer?.types?.includes('application/x-wangwang-image-url')) {
             e.preventDefault();
@@ -688,8 +689,8 @@ function CanvasContent() {
           onMoveEnd={() => scheduleAutoSave()}
           colorMode="dark"
           panOnScroll
-          selectionOnDrag
-          panOnDrag={[1, 2]} // Pan on Left (1) or Middle (2) mouse button
+          selectionOnDrag={!isSpacePressed}
+          panOnDrag={isSpacePressed ? [1, 2] : [2]} // Pan on Left (1) or Middle (2) when Space is held, else only Middle
           zoomOnDoubleClick={false}
           deleteKeyCode={['Backspace', 'Delete']}
         >
@@ -710,6 +711,37 @@ function CanvasContent() {
             maskColor="rgba(0, 0, 0, 0.6)"
           />
           <ZoomDisplay />
+          
+          <Panel position="bottom-center" className="bg-gray-900/80 backdrop-blur-sm border border-gray-700 rounded-xl p-3 text-xs text-gray-400 select-none pointer-events-none mb-2 shadow-2xl flex items-center space-x-6">
+            <div className="flex items-center">
+              <div className="flex space-x-1 mr-2">
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded min-w-[32px] text-center border border-gray-600 shadow-sm font-medium">空格</span>
+                <span className="text-gray-500 font-bold">+</span>
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded border border-gray-600 shadow-sm font-medium">左键</span>
+              </div>
+              <span className="text-gray-300">移动画布</span>
+            </div>
+            <div className="flex items-center">
+              <div className="flex space-x-1 mr-2">
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded border border-gray-600 shadow-sm font-medium">Ctrl</span>
+                <span className="text-gray-500 font-bold">+</span>
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded border border-gray-600 shadow-sm font-medium">滚轮</span>
+              </div>
+              <span className="text-gray-300">缩放画布</span>
+            </div>
+            <div className="flex items-center">
+              <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded mr-2 min-w-[32px] text-center border border-gray-600 shadow-sm font-medium">右键</span>
+              <span className="text-gray-300">添加组件</span>
+            </div>
+            <div className="flex items-center">
+              <div className="flex space-x-1 mr-2">
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded border border-gray-600 shadow-sm font-medium">Del</span>
+                <span className="text-gray-500 font-bold">/</span>
+                <span className="bg-gray-700 text-gray-200 px-1.5 py-0.5 rounded border border-gray-600 shadow-sm font-medium">BS</span>
+              </div>
+              <span className="text-gray-300">删除节点</span>
+            </div>
+          </Panel>
         </ReactFlow>
 
         <NodeFloatingPanel
